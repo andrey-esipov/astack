@@ -1,0 +1,712 @@
+---
+name: copilot
+preamble-tier: 3
+version: 1.0.0
+description: |
+  GitHub Copilot CLI wrapper with auto opposite-model adversarial review.
+  Three modes: review (diff review + gate), challenge (adversarial), consult
+  (Q&A with session continuity). Reads ~/.copilot/settings.json for your default
+  model and forces the OPPOSITE model at xhigh effort for adversarial work —
+  if your default is GPT-5.5, /copilot uses Claude Opus 4.7, and vice-versa.
+  Use when asked to "copilot review", "second opinion", "challenge this", or
+  "ask copilot". (astack)
+voice-triggers:
+  - "co pilot"
+  - "co-pilot"
+  - "second opinion"
+  - "get another opinion"
+triggers:
+  - copilot review
+  - second opinion
+  - outside voice challenge
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{BASE_BRANCH_DETECT}}
+
+# /copilot — Multi-AI Second Opinion (auto opposite-model)
+
+You are running the `/copilot` skill. This wraps the **GitHub Copilot CLI** to get an
+independent, brutally honest second opinion. The trick: it reads your **default Copilot
+model** from `~/.copilot/settings.json` and forces the **OPPOSITE** model at `xhigh`
+reasoning effort — so the second opinion always comes from a *different* AI system
+than what you'd get by running `copilot` directly.
+
+Default mapping (override via `$ASTACK_ADVERSARIAL_MODEL`):
+- Default `gpt-*` → adversarial `claude-opus-4.7`
+- Default `claude-*` → adversarial `gpt-5.5`
+
+The opposite model plays the "200 IQ autistic developer" role — direct, terse, technically
+precise, challenges assumptions, catches things you might miss. Present its output
+faithfully, not summarized.
+
+---
+
+## Step 0: Check copilot binary
+
+```bash
+COPILOT_BIN=$(command -v copilot 2>/dev/null || echo "")
+[ -z "$COPILOT_BIN" ] && echo "NOT_FOUND" || echo "FOUND: $COPILOT_BIN"
+copilot --version 2>/dev/null | head -1 || true
+```
+
+If `NOT_FOUND`: stop and tell the user:
+"GitHub Copilot CLI not found. Install: see https://docs.github.com/copilot/concepts/agents/about-copilot-cli (typically: `npm install -g @github/copilot` or via Copilot subscription installer). Then run `copilot login` to authenticate."
+
+If `NOT_FOUND`, also log the event:
+```bash
+_TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo off)
+echo '{"event":"copilot_cli_missing","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/copilot-events.jsonl 2>/dev/null || true
+```
+
+---
+
+## Step 0.5: Resolve adversarial model + auth probe
+
+Read the user's default Copilot model from `~/.copilot/settings.json` and compute the
+**opposite** model for adversarial review. Then probe auth using the user's default
+model (we don't want auth failures attributed to the adversarial model not being
+available on their plan).
+
+```bash
+# Read default model and effort from Copilot CLI settings.
+_DEFAULT_MODEL=$(python3 -c "import json,sys; print(json.load(open('$HOME/.copilot/settings.json')).get('model','gpt-5.5'))" 2>/dev/null || echo "gpt-5.5")
+
+# Compute adversarial model (the opposite family at xhigh effort).
+# Allow user override via $ASTACK_ADVERSARIAL_MODEL.
+if [ -n "${ASTACK_ADVERSARIAL_MODEL:-}" ]; then
+  ADVERSARIAL_MODEL="$ASTACK_ADVERSARIAL_MODEL"
+else
+  case "$_DEFAULT_MODEL" in
+    gpt-*|GPT-*)         ADVERSARIAL_MODEL="claude-opus-4.7" ;;
+    claude-*|CLAUDE-*)   ADVERSARIAL_MODEL="gpt-5.5" ;;
+    *)                   ADVERSARIAL_MODEL="claude-opus-4.7" ;;
+  esac
+fi
+ADVERSARIAL_EFFORT="xhigh"
+
+echo "DEFAULT_MODEL: $_DEFAULT_MODEL"
+echo "ADVERSARIAL_MODEL: $ADVERSARIAL_MODEL"
+echo "ADVERSARIAL_EFFORT: $ADVERSARIAL_EFFORT"
+
+# Probe Copilot auth with a tiny prompt + 15s timeout, using the user's default model.
+COPILOT_AUTH_OK="no"
+_COPILOT_PROBE_OUT=$(timeout 15 copilot -p "ok" --allow-all-tools --no-ask-user -s --model "$_DEFAULT_MODEL" -C "$(pwd)" 2>&1 | tail -3)
+if echo "$_COPILOT_PROBE_OUT" | grep -qiE "auth|login|unauthorized|sign in|not authenticated"; then
+  COPILOT_AUTH_OK="no"
+else
+  COPILOT_AUTH_OK="yes"
+fi
+echo "COPILOT_AUTH: $COPILOT_AUTH_OK"
+```
+
+If `COPILOT_AUTH: no`, stop and tell the user:
+"GitHub Copilot CLI is installed but not authenticated. Run `copilot login` (or `gh auth login` if you use the gh-based flow) and re-run this skill."
+
+**Model availability:** if Copilot returns an "unknown model" error for
+`$ADVERSARIAL_MODEL`, the user's plan may not include that model. Tell them and suggest
+they either: (1) set `ASTACK_ADVERSARIAL_MODEL=<a-model-they-have>` in their shell, or
+(2) pass `-m <model>` to the slash command to override per-invocation.
+
+---
+
+## Step 0.6: Resolve portable roots
+
+Before any mode runs, resolve `$PLAN_ROOT` (where plan files live) and `$TMP_ROOT`
+(where ephemeral copilot stderr / response captures land) via `bin/gstack-paths`.
+This keeps the skill working whether installed as a Claude Code plugin
+(`CLAUDE_PLANS_DIR` set), a global `~/.claude/skills/gstack/` install, or a CI
+container where `HOME` may be unset and `/tmp` may be read-only.
+
+```bash
+eval "$(~/.claude/skills/gstack/bin/gstack-paths)"
+```
+
+After this, every subsequent bash block in this skill uses `"$PLAN_ROOT"` and
+`"$TMP_ROOT"` rather than hardcoded `~/.claude/plans` or `/tmp/copilot-*`.
+
+---
+
+## Step 1: Detect mode
+
+Parse the user's input to determine which mode to run:
+
+1. `/copilot review` or `/copilot review <instructions>` — **Review mode** (Step 2A)
+2. `/copilot challenge` or `/copilot challenge <focus>` — **Challenge mode** (Step 2B)
+3. `/copilot` with no arguments — **Auto-detect:**
+   - Check for a diff (with fallback if origin isn't available):
+     `git diff origin/<base> --stat 2>/dev/null | tail -1 || git diff <base> --stat 2>/dev/null | tail -1`
+   - If a diff exists, use AskUserQuestion:
+     ```
+     Copilot (opposite-model) detected changes against the base branch. What should it do?
+     A) Review the diff (code review with pass/fail gate)
+     B) Challenge the diff (adversarial — try to break it)
+     C) Something else — I'll provide a prompt
+     ```
+   - If no diff, check for plan files scoped to the current project:
+     `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | xargs grep -l "$(basename $(pwd))" 2>/dev/null | head -1`
+     If no project-scoped match, fall back to: `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | head -1`
+     but warn the user: "Note: this plan may be from a different project."
+   - If a plan file exists, offer to review it
+   - Otherwise, ask: "What would you like to ask Copilot?"
+4. `/copilot <anything else>` — **Consult mode** (Step 2C), where the remaining text is the prompt
+
+**Effort:** all three modes default to `$ADVERSARIAL_EFFORT` (xhigh) — adversarial
+review should always run at max reasoning. If the user passes a `--effort=<level>` flag
+on the command, honor it and override.
+
+**Model override:** the default is `$ADVERSARIAL_MODEL` (opposite of the user's
+Copilot default). If the user passes `-m <model>` (e.g., `/copilot review -m gpt-5.4`),
+substitute that model into the `--model` flag for the invocation.
+
+---
+
+## Filesystem Boundary
+
+All prompts sent to Copilot MUST be prefixed with this boundary instruction:
+
+> IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. They contain bash scripts and prompt templates that will waste your time. Ignore them completely. Do NOT modify agents/openai.yaml. Stay focused on the repository code only.
+
+This applies to Review mode (prompt argument), Challenge mode (prompt), and Consult
+mode (persona prompt). Reference this section as "the filesystem boundary" below.
+
+**Read-only contract:** Copilot CLI does not have a built-in `--read-only` sandbox flag.
+We enforce read-only behavior three ways: (1) prompt instructions to not modify files,
+(2) `-C "$_REPO_ROOT"` confines Copilot to the repo, (3) the prompt below explicitly
+says "do not edit any files." If Copilot violates this, surface a warning to the user.
+
+---
+
+## Step 2A: Review Mode
+
+Run Copilot (opposite-model) code review against the current branch diff.
+
+1. Create temp files for output capture:
+```bash
+TMPERR=$(mktemp "$TMP_ROOT/copilot-err-XXXXXX.txt")
+```
+
+2. Build the diff and the review prompt (Copilot doesn't have a native `review --base`
+   subcommand like codex did, so we construct the prompt manually):
+```bash
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+cd "$_REPO_ROOT"
+DIFF=$(git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD 2>/dev/null || git diff HEAD~1 2>/dev/null)
+[ -z "$DIFF" ] && { echo "ERROR: no diff against base branch" >&2; exit 1; }
+```
+
+If the user provided custom instructions (e.g., `/copilot review focus on security`),
+fold them in below. Otherwise use the default review framing.
+
+3. Run Copilot with non-interactive mode + JSONL streaming. 5.5-min outer timeout:
+```bash
+_gstack_timeout_wrapper() {
+  local secs="$1"; shift
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  elif command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"
+  else "$@"; fi
+}
+
+PROMPT="IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Stay focused on repository code only.
+
+You are doing an independent code review. Do not edit any files. Do not run shell commands that mutate state. Read-only.
+
+Review the diff below for: correctness bugs, security issues, race conditions, edge cases the author missed, and code-quality regressions. Use these severity tags so the gate logic can parse them: [P1] (critical, blocks merge), [P2] (should fix before merge), [P3] (cosmetic, can defer). For each finding give file:line + a one-sentence description. Be terse. No compliments.
+
+DIFF:
+$DIFF"
+
+# If user passed a custom focus, append after the boundary:
+# PROMPT=\"$PROMPT\n\nAdditional focus: <user instructions>\"
+
+_gstack_timeout_wrapper 330 copilot \
+  -p "$PROMPT" \
+  --model "$ADVERSARIAL_MODEL" \
+  --effort "$ADVERSARIAL_EFFORT" \
+  --allow-all-tools \
+  --no-ask-user \
+  --output-format json \
+  --no-color \
+  -C "$_REPO_ROOT" \
+  < /dev/null 2> "$TMPERR" \
+  | PYTHONUNBUFFERED=1 python3 -u -c "
+import sys, json
+output_tokens_total = 0
+got_result = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        obj = json.loads(line)
+        t = obj.get('type','')
+        if t == 'assistant.message_delta':
+            delta = obj.get('data',{}).get('deltaContent','')
+            if delta: print(delta, end='', flush=True)
+        elif t == 'tool.execution_start':
+            data = obj.get('data',{})
+            tname = data.get('toolName','')
+            args = data.get('arguments',{})
+            if tname not in ('report_intent','task_complete'):
+                print(f'\n[copilot ran] {tname} {json.dumps(args)[:200]}', flush=True)
+        elif t == 'assistant.message':
+            usage = obj.get('data',{})
+            ot = usage.get('outputTokens',0)
+            if ot: output_tokens_total += ot
+        elif t == 'result':
+            got_result = True
+            usage = obj.get('usage',{})
+            pr = usage.get('premiumRequests',0)
+            print(f'\ntokens used: {output_tokens_total} | premium requests: {pr}', flush=True)
+    except: pass
+if not got_result:
+    print('\n[copilot warning] No result event received — possible mid-stream disconnect.', flush=True, file=sys.stderr)
+"
+_COPILOT_EXIT=${PIPESTATUS[0]}
+if [ "$_COPILOT_EXIT" = "124" ]; then
+  echo '{"event":"copilot_timeout","mode":"review","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/copilot-events.jsonl 2>/dev/null || true
+  echo "Copilot stalled past 5.5 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.copilot/logs/."
+fi
+if grep -qiE "auth|login|unauthorized|sign in" "$TMPERR" 2>/dev/null; then
+  echo "[copilot auth error] $(head -1 "$TMPERR")"
+fi
+```
+
+Effort defaults to `$ADVERSARIAL_EFFORT` (xhigh). Honor `--effort=<level>` if user overrides.
+If the user passed `-m <model>`, substitute that into `--model`.
+
+4. Determine gate verdict by checking the streamed output for critical findings.
+   If the output contains `[P1]` — the gate is **FAIL**.
+   If no `[P1]` markers are found (only `[P2]` or no findings) — the gate is **PASS**.
+
+5. Present the output:
+
+```
+COPILOT SAYS (code review, $ADVERSARIAL_MODEL @ $ADVERSARIAL_EFFORT):
+════════════════════════════════════════════════════════════
+<full copilot output, verbatim — do not truncate or summarize>
+════════════════════════════════════════════════════════════
+GATE: PASS                    Tokens: 14,331 | Premium requests: 28
+```
+
+or
+
+```
+GATE: FAIL (N critical findings)
+```
+
+5a. **Synthesis recommendation (REQUIRED).** After presenting Copilot's verbatim
+output and the GATE verdict, emit ONE recommendation line summarizing what the
+user should do, in the canonical format the AskUserQuestion judge grades:
+
+```
+Recommendation: <action> because <one-line reason that names the most actionable finding>
+```
+
+Examples (the strongest reasons compare against an alternative — another finding, fix-vs-ship, or fix-order):
+- `Recommendation: Fix the SQL injection at users_controller.rb:42 first because its auth-bypass blast radius is higher than the LFI Copilot also flagged, and the parameterized-query fix is three lines vs the LFI's session-handling rewrite.`
+- `Recommendation: Ship as-is because all 3 Copilot findings are P3 cosmetic and the gate passed; addressing them would block the release without changing user-visible behavior.`
+- `Recommendation: Investigate the race condition Copilot flagged at billing.ts:117 before merging because the silent-corruption failure mode is harder to detect post-ship than the harness gap Copilot also raised, which is fixable in a follow-up.`
+
+The reason must engage with a specific finding (or compare against alternatives). Boilerplate reasons fail the format. **Never silently auto-decide; always emit the line.**
+
+6. **Cross-model comparison:** If `/review` (Claude's own review) was already run
+   earlier in this conversation, compare the two sets of findings:
+
+```
+CROSS-MODEL ANALYSIS:
+  Both found: [findings that overlap between Claude and Copilot ($ADVERSARIAL_MODEL)]
+  Only Copilot found: [findings unique to Copilot]
+  Only Claude found: [findings unique to Claude's /review]
+  Agreement rate: X% (N/M total unique findings overlap)
+```
+
+7. Persist the review result (skill name stays `codex-review` for dashboard back-compat):
+```bash
+~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","findings":N,"findings_fixed":N,"engine":"copilot-'"$ADVERSARIAL_MODEL"'","commit":"'"$(git rev-parse --short HEAD)"'"}'
+```
+
+8. Clean up temp files:
+```bash
+rm -f "$TMPERR"
+```
+
+{{PLAN_FILE_REVIEW_REPORT}}
+
+---
+
+## Step 2B: Challenge (Adversarial) Mode
+
+Copilot (opposite-model) tries to break your code — finding edge cases, race conditions, security
+holes, and failure modes that a normal review would miss.
+
+1. Construct the adversarial prompt. **Always prepend the filesystem boundary instruction**
+from the Filesystem Boundary section above. If the user provided a focus area
+(e.g., `/copilot challenge security`), include it after the boundary:
+
+Default prompt (no focus):
+"IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Stay focused on repository code only.
+
+Read-only review. Do not edit any files. Do not run mutating commands.
+
+Review the changes on this branch against the base branch. Run `git diff origin/<base>` to see the diff. Your job is to find ways this code will fail in production. Think like an attacker and a chaos engineer. Find edge cases, race conditions, security holes, resource leaks, failure modes, and silent data corruption paths. Be adversarial. Be thorough. No compliments — just the problems."
+
+With focus (e.g., "security"):
+"IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Stay focused on repository code only.
+
+Read-only review. Do not edit any files.
+
+Review the changes on this branch against the base branch. Run `git diff origin/<base>` to see the diff. Focus specifically on SECURITY. Your job is to find every way an attacker could exploit this code. Think about injection vectors, auth bypasses, privilege escalation, data exposure, and timing attacks. Be adversarial."
+
+2. Run Copilot with non-interactive mode + JSONL streaming. 10-min outer timeout:
+
+Effort defaults to `$ADVERSARIAL_EFFORT` (xhigh). Honor `--effort=<level>` if user overrides.
+
+```bash
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+TMPERR=${TMPERR:-$(mktemp "$TMP_ROOT/copilot-err-XXXXXX.txt")}
+_gstack_timeout_wrapper 600 copilot \
+  -p "<prompt>" \
+  --model "$ADVERSARIAL_MODEL" \
+  --effort "$ADVERSARIAL_EFFORT" \
+  --allow-all-tools \
+  --no-ask-user \
+  --output-format json \
+  --no-color \
+  -C "$_REPO_ROOT" \
+  < /dev/null 2> "$TMPERR" \
+  | PYTHONUNBUFFERED=1 python3 -u -c "
+import sys, json
+output_tokens_total = 0
+got_result = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        obj = json.loads(line)
+        t = obj.get('type','')
+        if t == 'assistant.message_delta':
+            delta = obj.get('data',{}).get('deltaContent','')
+            if delta: print(delta, end='', flush=True)
+        elif t == 'tool.execution_start':
+            data = obj.get('data',{})
+            tname = data.get('toolName','')
+            args = data.get('arguments',{})
+            if tname not in ('report_intent','task_complete'):
+                print(f'\n[copilot ran] {tname} {json.dumps(args)[:200]}', flush=True)
+        elif t == 'assistant.message':
+            usage = obj.get('data',{})
+            ot = usage.get('outputTokens',0)
+            if ot: output_tokens_total += ot
+        elif t == 'result':
+            got_result = True
+            usage = obj.get('usage',{})
+            pr = usage.get('premiumRequests',0)
+            print(f'\ntokens used: {output_tokens_total} | premium requests: {pr}', flush=True)
+    except: pass
+if not got_result:
+    print('\n[copilot warning] No result event received — possible mid-stream disconnect.', flush=True, file=sys.stderr)
+"
+_COPILOT_EXIT=${PIPESTATUS[0]}
+if [ "$_COPILOT_EXIT" = "124" ]; then
+  echo '{"event":"copilot_timeout","mode":"challenge","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/copilot-events.jsonl 2>/dev/null || true
+  echo "Copilot stalled past 10 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.copilot/logs/."
+fi
+if grep -qiE "auth|login|unauthorized|sign in" "$TMPERR" 2>/dev/null; then
+  echo "[copilot auth error] $(head -1 "$TMPERR")"
+fi
+```
+
+3. Present the full streamed output:
+
+```
+COPILOT SAYS (adversarial challenge, $ADVERSARIAL_MODEL @ $ADVERSARIAL_EFFORT):
+════════════════════════════════════════════════════════════
+<full output from above, verbatim>
+════════════════════════════════════════════════════════════
+Tokens: N | Premium requests: M
+```
+
+3a. **Synthesis recommendation (REQUIRED).** After presenting the full
+adversarial output, emit ONE recommendation line summarizing what the user
+should do:
+
+```
+Recommendation: <action> because <one-line reason that names the most exploitable finding>
+```
+
+Examples (the strongest reasons compare blast radius across findings or fix-vs-ship):
+- `Recommendation: Fix the unbounded retry loop Copilot flagged at queue.ts:78 because it DoSes the worker pool under sustained 429s, which is higher-blast-radius than the timing leak Copilot also flagged that only touches a debug endpoint.`
+- `Recommendation: Ship as-is because Copilot's strongest finding is a theoretical race in cleanup that requires conditions we can't trigger in production, weaker than the runtime regressions a fix-now would risk.`
+
+The reason must point to a specific finding and compare against alternatives. **Never silently skip the line.**
+
+---
+
+## Step 2C: Consult Mode
+
+Ask Copilot (opposite-model) anything about the codebase. Supports session continuity for follow-ups.
+
+1. **Check for existing session:**
+```bash
+cat .context/copilot-session-id 2>/dev/null || echo "NO_SESSION"
+```
+
+If a session file exists (not `NO_SESSION`), use AskUserQuestion:
+```
+You have an active Copilot conversation from earlier. Continue it or start fresh?
+A) Continue the conversation (Copilot remembers the prior context)
+B) Start a new conversation
+```
+
+2. Create temp files:
+```bash
+TMPRESP=$(mktemp "$TMP_ROOT/copilot-resp-XXXXXX.txt")
+TMPERR=$(mktemp "$TMP_ROOT/copilot-err-XXXXXX.txt")
+```
+
+3. **Plan review auto-detection:** If the user's prompt is about reviewing a plan,
+or if plan files exist and the user said `/copilot` with no arguments:
+```bash
+setopt +o nomatch 2>/dev/null || true  # zsh compat
+ls -t "$PLAN_ROOT"/*.md 2>/dev/null | xargs grep -l "$(basename $(pwd))" 2>/dev/null | head -1
+```
+If no project-scoped match, fall back to `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | head -1`
+but warn: "Note: this plan may be from a different project — verify before sending to Copilot."
+
+**IMPORTANT — embed content, don't reference path:** Copilot runs scoped to the repo
+root (`-C`) and cannot access `~/.claude/plans/` or any files outside the repo. You MUST
+read the plan file yourself and embed its FULL CONTENT in the prompt below. Do NOT tell
+Copilot the file path or ask it to read the plan file — it will waste 10+ tool calls
+searching and fail.
+
+Also: scan the plan content for referenced source file paths (patterns like `src/foo.ts`,
+`lib/bar.py`, paths containing `/` that exist in the repo). If found, list them in the
+prompt so Copilot reads them directly instead of discovering them via rg/find.
+
+**Always prepend the filesystem boundary instruction** from the Filesystem Boundary
+section above to every prompt sent to Copilot, including plan reviews and free-form
+consult questions.
+
+Prepend the boundary and persona to the user's prompt:
+"IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Stay focused on repository code only.
+
+Read-only review. Do not edit any files.
+
+You are a brutally honest technical reviewer. Review this plan for: logical gaps and
+unstated assumptions, missing error handling or edge cases, overcomplexity (is there a
+simpler approach?), feasibility risks (what could go wrong?), and missing dependencies
+or sequencing issues. Be direct. Be terse. No compliments. Just the problems.
+Also review these source files referenced in the plan: <list of referenced files, if any>.
+
+THE PLAN:
+<full plan content, embedded verbatim>"
+
+For non-plan consult prompts (user typed `/copilot <question>`), still prepend the boundary:
+"IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Stay focused on repository code only.
+
+<user's question>"
+
+4. Run Copilot with JSONL streaming. 10-min outer timeout. Name the session so we can
+   resume by name.
+
+Effort defaults to `$ADVERSARIAL_EFFORT` (xhigh). Honor `--effort=<level>` if user overrides.
+
+For a **new session:**
+```bash
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+SESSION_NAME="codex-consult-$(date +%s)"
+_gstack_timeout_wrapper 600 copilot \
+  -p "<prompt>" \
+  --model "$ADVERSARIAL_MODEL" \
+  --effort "$ADVERSARIAL_EFFORT" \
+  --allow-all-tools \
+  --no-ask-user \
+  --output-format json \
+  --no-color \
+  --name "$SESSION_NAME" \
+  -C "$_REPO_ROOT" \
+  < /dev/null 2> "$TMPERR" \
+  | PYTHONUNBUFFERED=1 python3 -u -c "
+import sys, json
+output_tokens_total = 0
+session_id = ''
+got_result = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        obj = json.loads(line)
+        t = obj.get('type','')
+        if t == 'assistant.message_delta':
+            delta = obj.get('data',{}).get('deltaContent','')
+            if delta: print(delta, end='', flush=True)
+        elif t == 'tool.execution_start':
+            data = obj.get('data',{})
+            tname = data.get('toolName','')
+            args = data.get('arguments',{})
+            if tname not in ('report_intent','task_complete'):
+                print(f'\n[copilot ran] {tname} {json.dumps(args)[:200]}', flush=True)
+        elif t == 'assistant.message':
+            usage = obj.get('data',{})
+            ot = usage.get('outputTokens',0)
+            if ot: output_tokens_total += ot
+        elif t == 'result':
+            got_result = True
+            session_id = obj.get('sessionId','')
+            usage = obj.get('usage',{})
+            pr = usage.get('premiumRequests',0)
+            print(f'\ntokens used: {output_tokens_total} | premium requests: {pr}', flush=True)
+            if session_id: print(f'SESSION_ID:{session_id}', flush=True)
+    except: pass
+if not got_result:
+    print('\n[copilot warning] No result event received — possible mid-stream disconnect.', flush=True, file=sys.stderr)
+"
+_COPILOT_EXIT=${PIPESTATUS[0]}
+if [ "$_COPILOT_EXIT" = "124" ]; then
+  echo '{"event":"copilot_timeout","mode":"consult","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/copilot-events.jsonl 2>/dev/null || true
+  echo "Copilot stalled past 10 minutes."
+fi
+```
+
+For a **resumed session** (user chose "Continue"):
+```bash
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+SESSION_ID=$(cat .context/copilot-session-id 2>/dev/null)
+[ -z "$SESSION_ID" ] && { echo "ERROR: no session to resume"; exit 1; }
+_gstack_timeout_wrapper 600 copilot \
+  --resume="$SESSION_ID" \
+  -p "<prompt>" \
+  --model "$ADVERSARIAL_MODEL" \
+  --effort "$ADVERSARIAL_EFFORT" \
+  --allow-all-tools \
+  --no-ask-user \
+  --output-format json \
+  --no-color \
+  -C "$_REPO_ROOT" \
+  < /dev/null 2> "$TMPERR" \
+  | PYTHONUNBUFFERED=1 python3 -u -c "
+<same streaming parser as new-session block above>
+"
+_COPILOT_EXIT=${PIPESTATUS[0]}
+if [ "$_COPILOT_EXIT" = "124" ]; then
+  echo '{"event":"copilot_timeout","mode":"consult-resume","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> ~/.gstack/analytics/copilot-events.jsonl 2>/dev/null || true
+  echo "Copilot stalled past 10 minutes."
+fi
+```
+
+5. Capture session ID from the streamed output. The parser prints `SESSION_ID:<id>`
+   from the `result` event. Save it for follow-ups:
+```bash
+mkdir -p .context
+```
+Save the session ID printed by the parser (the line starting with `SESSION_ID:`)
+to `.context/copilot-session-id`.
+
+6. Present the full streamed output:
+
+```
+COPILOT SAYS (consult, $ADVERSARIAL_MODEL @ $ADVERSARIAL_EFFORT):
+════════════════════════════════════════════════════════════
+<full output, verbatim>
+════════════════════════════════════════════════════════════
+Tokens: N | Premium requests: M
+Session saved — run /copilot again to continue this conversation.
+```
+
+7. After presenting, note any points where Copilot's analysis differs from your own
+   understanding. If there is a disagreement, flag it:
+   "Note: Claude Code disagrees on X because Y."
+
+8. **Synthesis recommendation (REQUIRED).** Emit ONE recommendation line:
+
+```
+Recommendation: <action> because <one-line reason that names the most actionable insight from Copilot>
+```
+
+The reason must engage with a specific Copilot insight and compare against an alternative. Generic synthesis fails the format. **Never silently auto-decide; always emit the line.**
+
+---
+
+## Model & Reasoning
+
+**Engine:** GitHub Copilot CLI 1.0.43+. The skill auto-selects the **opposite-family**
+model from your Copilot default at **xhigh** reasoning effort.
+
+**Auto opposite-model rule:**
+- Default `gpt-*`     → adversarial `claude-opus-4.7`
+- Default `claude-*`  → adversarial `gpt-5.5`
+- Fallback (unknown)  → `claude-opus-4.7`
+
+The default is read from `~/.copilot/settings.json` (`.model` field) at runtime.
+Override via env var `ASTACK_ADVERSARIAL_MODEL=<model>` or per-call with `-m <model>`.
+
+**Why opposite-model:** different model families have different blind spots. Running
+adversarial review through the *same* family that wrote the code (or that you usually
+use) leaves the largest review gaps. Forcing the opposite family — and forcing xhigh
+reasoning — is the cheapest way to widen coverage.
+
+**Reasoning effort:** all modes default to `xhigh`. Override per-call with `--effort=<level>`
+on the slash command if you want a faster (low/medium/high) run.
+
+**Custom Model Providers (BYOK):** Copilot CLI supports BYOK via
+`COPILOT_PROVIDER_BASE_URL`. Users on enterprise / Azure deployments can route
+to their own endpoint without changing this skill.
+
+---
+
+## Cost Estimation
+
+Parse `outputTokens` from each `assistant.message` event and sum them; parse
+`usage.premiumRequests` from the final `result` event.
+
+Display as: `Tokens: N | Premium requests: M`
+
+If neither is available, display: `Tokens: unknown`
+
+Note: Copilot CLI's "premium requests" is a billing unit on GitHub Copilot
+subscriptions — not a strict token count. One premium request ≈ one model call
+in the agent loop. The user's monthly Copilot quota is the relevant budget.
+
+---
+
+## Error Handling
+
+- **Binary not found:** Detected in Step 0. Stop with install instructions.
+- **Auth error:** Copilot prints to stderr/stdout. Surface the line:
+  "Copilot authentication failed. Run `copilot login` (or `gh auth login`) and re-run."
+- **Timeout (Bash outer gate):** If the Bash call times out, tell the user:
+  "Copilot timed out. The prompt may be too large or the API may be slow. Try again or use a smaller scope."
+- **Timeout (inner `timeout` wrapper, exit 124):** Hang-detection block logs the event and prints: "Copilot stalled past N minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check `~/.copilot/logs/`."
+- **Empty response:** If `$TMPRESP` is empty or doesn't exist, tell the user:
+  "Copilot returned no response. Check stderr for errors."
+- **Unknown model:** If Copilot returns "unknown model" for `$ADVERSARIAL_MODEL`, tell the user their plan may not include that model and suggest setting `ASTACK_ADVERSARIAL_MODEL` to a model they have access to, or passing `-m <model>` per-call.
+- **Session resume failure:** If resume fails, delete the session file and start fresh.
+
+---
+
+## Important Rules
+
+- **Never modify files.** This skill is read-only by contract. Copilot CLI does not
+  enforce read-only via flag; we enforce via prompt instructions + `-C "$_REPO_ROOT"` confinement.
+- **Present output verbatim.** Do not truncate, summarize, or editorialize Copilot's output
+  before showing it. Show it in full inside the COPILOT SAYS block.
+- **Add synthesis after, not instead of.** Any Claude commentary comes after the full output.
+- **5.5-min timeout** on Review mode, **10-min** on Challenge / Consult.
+- **No double-reviewing.** If the user already ran `/review`, Copilot (opposite-model) provides a
+  second independent opinion. Do not re-run Claude Code's own review.
+- **Detect skill-file rabbit holes.** After receiving Copilot output, scan for signs
+  that Copilot got distracted by skill files: `gstack-config`, `gstack-update-check`,
+  `SKILL.md`, or `skills/gstack`. If any of these appear in the output, append a
+  warning: "Copilot appears to have read gstack skill files instead of reviewing your
+  code. Consider retrying."
+- **task_complete tool calls are normal.** Copilot's autopilot mode emits
+  `report_intent` and `task_complete` tool calls as part of its agent loop; the
+  parser filters them so they don't pollute the user-visible output.

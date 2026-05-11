@@ -10,7 +10,40 @@ sync workflow.
 
 These are the substantive divergences from upstream `garrytan/gstack`:
 
-### 1. `/copilot` (new skill) + `/codex` (delegate shim)
+### 1. GitHub Copilot CLI as a first-class host (`--host copilot`)
+
+Adds GitHub Copilot CLI to gstack's host abstraction so all 46 skills install
+natively as Copilot CLI custom agents.
+
+- **`hosts/copilot.ts`** — new HostConfig: emits `.agent.md` files with YAML
+  frontmatter (`name`, `description`, `target: github-copilot`, `tools: ["*"]`),
+  per Copilot's [custom agents schema](https://docs.github.com/en/copilot/reference/custom-agents-configuration).
+- **`scripts/host-config.ts`** — adds `outputLayout?: 'per-skill-dir' | 'flat-agent-md'`
+  field to `HostConfig`. Default is `'per-skill-dir'` (every existing host).
+  Copilot uses `'flat-agent-md'` (one file per skill, flat under `~/.copilot/agents/`).
+- **`scripts/gen-skill-docs.ts`** — branch in `processExternalHost` emits to
+  `<hostSubdir>/agents/<name>.agent.md` when `outputLayout === 'flat-agent-md'`.
+- **`hosts/index.ts`** — registers `copilot` in `ALL_HOST_CONFIGS`.
+- **`setup`** — adds `INSTALL_COPILOT` flag, build step, install step. Run
+  `./setup --host copilot` to:
+  1. Generate `gstack-*.agent.md` files into `<repo>/.copilot/agents/`
+  2. Symlink each into `~/.copilot/agents/`
+  3. Create `~/.copilot/gstack/` runtime root with `bin/`, `browse-dist/`,
+     `gstack-upgrade/`, `ETHOS.md` symlinks
+
+**Invoke**: `copilot --agent <skill> "..."` (e.g., `copilot --agent qa "test staging"`).
+Set `export GSTACK_ROOT=$HOME/.copilot/gstack` before launching `copilot` so
+agent prompts can resolve `$GSTACK_ROOT/bin/...` references.
+
+The `/copilot` gstack skill itself is excluded from generation (`skipSkills: ['copilot']`)
+because that skill shells out to the `copilot` CLI — exposing it as a Copilot
+agent would recurse.
+
+This change is upstream-PR-quality: it's purely additive (existing hosts are
+untouched by the `outputLayout` branch). Could be sent to `garrytan/gstack` as
+a community contribution.
+
+### 2. `/copilot` (new skill) + `/codex` (delegate shim)
 
 - **`copilot/`** — wraps GitHub Copilot CLI for adversarial second-opinion
   reviews. Three modes: review (diff + gate), challenge (adversarial), consult
@@ -29,7 +62,7 @@ Why: this machine has Copilot CLI but no `codex` binary, and adversarial
 review should default to a different family than the model the user is
 running interactively.
 
-### 2. Azure GPT-image-2 backend for design skills
+### 3. Azure GPT-image-2 backend for design skills
 
 `design/src/backend.ts` (new) — abstraction that lets `/design-shotgun`,
 `/design-consultation`, `/design-html` route image generation through Azure
@@ -45,7 +78,7 @@ Call sites in `design/src/{generate,evolve,iterate,variants}.ts` and
 `{check,cli,design-to-code,diff,memory}.ts` are rewired to use
 `generateImage(config, …)` / `getChatBackend(config)` instead of raw fetch.
 
-### 3. `office-hours` — YC pitch removed
+### 4. `office-hours` — YC pitch removed
 
 The closing beats of `office-hours/SKILL.md` that pitch Y Combinator
 applications are stripped. (Upstream is Garry's personal recruiting funnel
@@ -71,9 +104,13 @@ Expected conflict sites on upstream sync:
 | `codex/SKILL.md.tmpl`           | Upstream evolves the codex skill; we have a 67-line delegate |
 | `design/src/{generate,evolve,iterate,variants,check,cli,...}.ts` | Upstream tweaks OpenAI plumbing; we route through `backend.ts` |
 | `office-hours/SKILL.md.tmpl`    | Upstream may evolve the closing beats; we deleted them |
+| `scripts/host-config.ts`        | Small (~10 lines) — the `outputLayout` field addition |
+| `scripts/gen-skill-docs.ts`     | Small (~10 lines) — the `flat-agent-md` branch in `processExternalHost` |
+| `setup`                         | Several small blocks for `INSTALL_COPILOT` plumbing |
+| `hosts/index.ts`                | 2 lines (import + register) |
 
 `copilot/` never conflicts (no upstream equivalent). `design/src/backend.ts`
-never conflicts. `bunfig.toml` never conflicts.
+never conflicts. `bunfig.toml` never conflicts. `hosts/copilot.ts` never conflicts.
 
 After resolving, regenerate compiled skill docs:
 

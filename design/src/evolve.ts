@@ -7,36 +7,31 @@
 
 import fs from "fs";
 import path from "path";
-import { requireApiKey } from "./auth";
+import { requireBackend, generateImage, getChatBackend, type ChatBackend } from "./backend";
 
 export interface EvolveOptions {
-  screenshot: string;  // Path to current site screenshot
-  brief: string;       // What to change ("make it calmer", "fix the hierarchy")
-  output: string;      // Output path for evolved mockup
+  screenshot: string;
+  brief: string;
+  output: string;
 }
 
-/**
- * Generate an evolved mockup from an existing screenshot + brief.
- * Sends the screenshot as context to GPT-4o with image generation,
- * asking it to produce a new version incorporating the brief's changes.
- */
 export async function evolve(options: EvolveOptions): Promise<void> {
-  const apiKey = requireApiKey();
+  const config = requireBackend();
   const screenshotData = fs.readFileSync(options.screenshot).toString("base64");
 
   console.error(`Evolving ${options.screenshot} with: "${options.brief}"`);
   const startTime = Date.now();
 
-  // Use the Responses API with both a text prompt referencing the screenshot
-  // and the image_generation tool to produce the evolved version.
-  // Since we can't send reference images directly to image_generation,
-  // we describe the current state in detail first via vision, then generate.
+  const chat = getChatBackend(config);
+  let analysis = "";
+  if (chat) {
+    analysis = await analyzeScreenshot(chat, screenshotData);
+    console.error(`  Analyzed current design: ${analysis.slice(0, 100)}...`);
+  } else {
+    console.error("  No vision backend available — proceeding with brief-only prompt.");
+    analysis = "(no vision analysis available — describe the requested changes from scratch)";
+  }
 
-  // Step 1: Analyze current screenshot
-  const analysis = await analyzeScreenshot(apiKey, screenshotData);
-  console.error(`  Analyzed current design: ${analysis.slice(0, 100)}...`);
-
-  // Step 2: Generate evolved version using analysis + brief
   const evolvedPrompt = [
     "Generate a pixel-perfect UI mockup that is an improved version of an existing design.",
     "",
@@ -51,76 +46,32 @@ export async function evolve(options: EvolveOptions): Promise<void> {
     "1536x1024 pixels.",
   ].join("\n");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const { b64 } = await generateImage(config, evolvedPrompt, "1536x1024", "high");
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        input: evolvedPrompt,
-        tools: [{ type: "image_generation", size: "1536x1024", quality: "high" }],
-      }),
-      signal: controller.signal,
-    });
+  fs.mkdirSync(path.dirname(options.output), { recursive: true });
+  const imageBuffer = Buffer.from(b64, "base64");
+  fs.writeFileSync(options.output, imageBuffer);
 
-    if (!response.ok) {
-      const error = await response.text();
-      if (response.status === 403 && error.includes("organization must be verified")) {
-        throw new Error(
-          "OpenAI organization verification required.\n"
-          + "Go to https://platform.openai.com/settings/organization to verify.\n"
-          + "After verification, wait up to 15 minutes for access to propagate.",
-        );
-      }
-      throw new Error(`API error (${response.status}): ${error.slice(0, 300)}`);
-    }
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.error(`Generated (${elapsed}s, ${(imageBuffer.length / 1024).toFixed(0)}KB) → ${options.output}`);
 
-    const data = await response.json() as any;
-    const imageItem = data.output?.find((item: any) => item.type === "image_generation_call");
-
-    if (!imageItem?.result) {
-      throw new Error("No image data in response");
-    }
-
-    fs.mkdirSync(path.dirname(options.output), { recursive: true });
-    const imageBuffer = Buffer.from(imageItem.result, "base64");
-    fs.writeFileSync(options.output, imageBuffer);
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.error(`Generated (${elapsed}s, ${(imageBuffer.length / 1024).toFixed(0)}KB) → ${options.output}`);
-
-    console.log(JSON.stringify({
-      outputPath: options.output,
-      sourceScreenshot: options.screenshot,
-      brief: options.brief,
-    }, null, 2));
-  } finally {
-    clearTimeout(timeout);
-  }
+  console.log(JSON.stringify({
+    outputPath: options.output,
+    sourceScreenshot: options.screenshot,
+    brief: options.brief,
+  }, null, 2));
 }
 
-/**
- * Analyze a screenshot to produce a detailed description for re-generation.
- */
-async function analyzeScreenshot(apiKey: string, imageBase64: string): Promise<string> {
+async function analyzeScreenshot(chat: ChatBackend, imageBase64: string): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(chat.url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: chat.headers,
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: chat.model,
         messages: [{
           role: "user",
           content: [

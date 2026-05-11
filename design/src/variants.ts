@@ -6,7 +6,7 @@
 
 import fs from "fs";
 import path from "path";
-import { requireApiKey } from "./auth";
+import { requireBackend, generateImage, type BackendConfig } from "./backend";
 import { parseBrief } from "./brief";
 
 export interface VariantsOptions {
@@ -30,104 +30,35 @@ const STYLE_VARIATIONS = [
 ];
 
 /**
- * Generate a single variant with retry on 429.
- *
- * Exported for testability. Pass `fetchFn` to inject a stubbed fetch in tests;
- * production code uses the global fetch by default.
+ * Generate a single variant with exponential backoff on transient failures.
  */
 export async function generateVariant(
-  apiKey: string,
+  config: BackendConfig,
   prompt: string,
   outputPath: string,
   size: string,
   quality: string,
-  fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<{ path: string; success: boolean; error?: string }> {
   const maxRetries = 3;
-  const MAX_RETRY_AFTER_MS = 60_000; // cap honored Retry-After to bound stalls
   let lastError = "";
-  let skipLeadingDelay = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0 && !skipLeadingDelay) {
-      // Exponential backoff: 2s, 4s, 8s
+    if (attempt > 0) {
       const delay = Math.pow(2, attempt) * 1000;
       console.error(`  Rate limited, retrying in ${delay / 1000}s...`);
       await new Promise(r => setTimeout(r, delay));
     }
-    skipLeadingDelay = false;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
 
     try {
-      const response = await fetchFn("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o",
-          input: prompt,
-          tools: [{ type: "image_generation", size, quality }],
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      if (response.status === 429) {
-        lastError = "Rate limited (429)";
-        const retryAfter = response.headers.get("retry-after");
-        if (retryAfter) {
-          const trimmed = retryAfter.trim();
-          let waitMs: number | null = null;
-          if (/^\d+$/.test(trimmed)) {
-            // delta-seconds (RFC 7231)
-            waitMs = Math.min(Number.parseInt(trimmed, 10) * 1000, MAX_RETRY_AFTER_MS);
-          } else {
-            // HTTP-date (RFC 7231)
-            const dateMs = Date.parse(trimmed);
-            if (!Number.isNaN(dateMs)) {
-              waitMs = Math.min(Math.max(0, dateMs - Date.now()), MAX_RETRY_AFTER_MS);
-            }
-          }
-          if (waitMs !== null) {
-            if (waitMs > 0) {
-              await new Promise(resolve => setTimeout(resolve, waitMs));
-            }
-            // Honored Retry-After (incl. 0 / past date "retry now") — skip the
-            // next iteration's leading exponential sleep so we don't double-wait.
-            skipLeadingDelay = true;
-          }
-        }
-        continue;
-      }
-
-      if (!response.ok) {
-        const error = await response.text();
-        if (response.status === 403 && error.includes("organization must be verified")) {
-          return { path: outputPath, success: false, error: "OpenAI organization verification required. Go to https://platform.openai.com/settings/organization to verify." };
-        }
-        return { path: outputPath, success: false, error: `API error (${response.status}): ${error.slice(0, 200)}` };
-      }
-
-      const data = await response.json() as any;
-      const imageItem = data.output?.find((item: any) => item.type === "image_generation_call");
-
-      if (!imageItem?.result) {
-        return { path: outputPath, success: false, error: "No image data in response" };
-      }
-
-      fs.writeFileSync(outputPath, Buffer.from(imageItem.result, "base64"));
+      const { b64 } = await generateImage(config, prompt, size, quality);
+      fs.writeFileSync(outputPath, Buffer.from(b64, "base64"));
       return { path: outputPath, success: true };
     } catch (err: any) {
-      clearTimeout(timeout);
-      if (err.name === "AbortError") {
-        return { path: outputPath, success: false, error: "Timeout (120s)" };
+      lastError = err.message || String(err);
+      if (/\b429\b|rate limit/i.test(lastError)) {
+        continue;
       }
-      lastError = err.message;
+      return { path: outputPath, success: false, error: lastError };
     }
   }
 
@@ -138,7 +69,7 @@ export async function generateVariant(
  * Generate N variants with staggered parallel execution.
  */
 export async function variants(options: VariantsOptions): Promise<void> {
-  const apiKey = requireApiKey();
+  const config = requireBackend();
   const baseBrief = options.briefFile
     ? parseBrief(options.briefFile, true)
     : parseBrief(options.brief!, false);
@@ -149,7 +80,7 @@ export async function variants(options: VariantsOptions): Promise<void> {
 
   // If viewports specified, generate responsive variants instead of style variants
   if (options.viewports) {
-    await generateResponsiveVariants(apiKey, baseBrief, options.outputDir, options.viewports, quality);
+    await generateResponsiveVariants(config, baseBrief, options.outputDir, options.viewports, quality);
     return;
   }
 
@@ -176,7 +107,7 @@ export async function variants(options: VariantsOptions): Promise<void> {
       new Promise(resolve => setTimeout(resolve, delay))
         .then(() => {
           console.error(`  Starting variant ${String.fromCharCode(65 + i)}...`);
-          return generateVariant(apiKey, prompt, outputPath, size, quality);
+          return generateVariant(config, prompt, outputPath, size, quality);
         })
     );
   }
@@ -220,7 +151,7 @@ const VIEWPORT_CONFIGS: Record<string, { size: string; suffix: string; desc: str
 };
 
 async function generateResponsiveVariants(
-  apiKey: string,
+  config: BackendConfig,
   baseBrief: string,
   outputDir: string,
   viewports: string,
@@ -237,20 +168,20 @@ async function generateResponsiveVariants(
   console.error(`Generating responsive variants: ${configs.map(c => c.desc).join(", ")}...`);
   const startTime = Date.now();
 
-  const promises = configs.map((config, i) => {
-    const prompt = `${baseBrief}\n\nViewport: ${config.desc}. Adapt the layout for this screen size. ${
-      config.suffix === "mobile" ? "Use a single-column layout, larger touch targets, and mobile navigation patterns." :
-      config.suffix === "tablet" ? "Use a responsive layout that works for medium screens." :
+  const promises = configs.map((vp, i) => {
+    const prompt = `${baseBrief}\n\nViewport: ${vp.desc}. Adapt the layout for this screen size. ${
+      vp.suffix === "mobile" ? "Use a single-column layout, larger touch targets, and mobile navigation patterns." :
+      vp.suffix === "tablet" ? "Use a responsive layout that works for medium screens." :
       ""
     }`;
-    const outputPath = path.join(outputDir, `responsive-${config.suffix}.png`);
+    const outputPath = path.join(outputDir, `responsive-${vp.suffix}.png`);
     const delay = i * 1500;
 
     return new Promise<{ path: string; success: boolean; error?: string }>(resolve =>
       setTimeout(resolve, delay)
     ).then(() => {
-      console.error(`  Starting ${config.desc}...`);
-      return generateVariant(apiKey, prompt, outputPath, config.size, quality);
+      console.error(`  Starting ${vp.desc}...`);
+      return generateVariant(config, prompt, outputPath, vp.size, quality);
     });
   });
 

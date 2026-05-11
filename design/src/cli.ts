@@ -19,6 +19,7 @@ import { compare } from "./compare";
 import { variants } from "./variants";
 import { iterate } from "./iterate";
 import { resolveApiKey, saveApiKey } from "./auth";
+import { loadBackendConfig, describeBackends } from "./backend";
 import { extractDesignLanguage, updateDesignMd } from "./memory";
 import { diffMockups, verifyAgainstMockup } from "./diff";
 import { evolve } from "./evolve";
@@ -65,22 +66,31 @@ function printUsage(): void {
 }
 
 async function runSetup(): Promise<void> {
-  const existing = resolveApiKey();
-  if (existing) {
-    console.log("Existing API key found. Running smoke test...");
+  const config = loadBackendConfig();
+  if (config.azure || config.openai) {
+    console.log(`Backend(s) detected: ${describeBackends(config)}. Running smoke test...`);
+  } else if (resolveApiKey()) {
+    console.log("Existing OpenAI API key found. Running smoke test...");
   } else {
-    console.log("No API key found. Please enter your OpenAI API key.");
-    console.log("Get one at: https://platform.openai.com/api-keys");
-    console.log("(Needs image generation permissions)\n");
+    console.log("No backend configured.");
+    console.log("");
+    console.log("Option A — Azure OpenAI (image generation only). Set env vars:");
+    console.log("  AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_IMAGE_DEPLOYMENT");
+    console.log("Or save them to ~/.gstack/openai.json under an `azure` block.");
+    console.log("");
+    console.log("Option B — OpenAI direct. Paste your sk- key now to save to ~/.gstack/openai.json:");
 
-    // Read from stdin
-    process.stdout.write("API key: ");
+    process.stdout.write("API key (or blank to abort): ");
     const reader = Bun.stdin.stream().getReader();
     const { value } = await reader.read();
     reader.releaseLock();
     const key = new TextDecoder().decode(value).trim();
 
-    if (!key || !key.startsWith("sk-")) {
+    if (!key) {
+      console.error("Aborted. Configure a backend and re-run `$D setup`.");
+      process.exit(1);
+    }
+    if (!key.startsWith("sk-")) {
       console.error("Invalid key. Must start with 'sk-'.");
       process.exit(1);
     }

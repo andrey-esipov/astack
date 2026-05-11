@@ -13,7 +13,7 @@
 
 import fs from "fs";
 import path from "path";
-import { requireApiKey } from "./auth";
+import { loadBackendConfig, getChatBackend } from "./backend";
 
 export interface ExtractedDesign {
   colors: { name: string; hex: string; usage: string }[];
@@ -27,21 +27,22 @@ export interface ExtractedDesign {
  * Extract visual language from an approved mockup PNG.
  */
 export async function extractDesignLanguage(imagePath: string): Promise<ExtractedDesign> {
-  const apiKey = requireApiKey();
+  const chat = getChatBackend(loadBackendConfig());
+  if (!chat) {
+    console.error("No vision backend configured — returning empty design language.");
+    return defaultDesign();
+  }
   const imageData = fs.readFileSync(imagePath).toString("base64");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(chat.url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: chat.headers,
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: chat.model,
         messages: [{
           role: "user",
           content: [

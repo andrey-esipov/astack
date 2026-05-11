@@ -4,7 +4,7 @@
  */
 
 import fs from "fs";
-import { requireApiKey } from "./auth";
+import { loadBackendConfig, getChatBackend } from "./backend";
 
 export interface CheckResult {
   pass: boolean;
@@ -15,21 +15,21 @@ export interface CheckResult {
  * Check a generated mockup against the original brief.
  */
 export async function checkMockup(imagePath: string, brief: string): Promise<CheckResult> {
-  const apiKey = requireApiKey();
+  const chat = getChatBackend(loadBackendConfig());
+  if (!chat) {
+    return { pass: true, issues: "No vision backend configured — quality check skipped" };
+  }
   const imageData = fs.readFileSync(imagePath).toString("base64");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(chat.url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: chat.headers,
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: chat.model,
         messages: [{
           role: "user",
           content: [

@@ -5,7 +5,7 @@
  */
 
 import fs from "fs";
-import { requireApiKey } from "./auth";
+import { loadBackendConfig, requireChatBackend } from "./backend";
 
 export interface DiffResult {
   differences: { area: string; description: string; severity: string }[];
@@ -20,7 +20,7 @@ export async function diffMockups(
   beforePath: string,
   afterPath: string,
 ): Promise<DiffResult> {
-  const apiKey = requireApiKey();
+  const chat = requireChatBackend(loadBackendConfig());
   const beforeData = fs.readFileSync(beforePath).toString("base64");
   const afterData = fs.readFileSync(afterPath).toString("base64");
 
@@ -28,14 +28,11 @@ export async function diffMockups(
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(chat.url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: chat.headers,
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: chat.model,
         messages: [{
           role: "user",
           content: [

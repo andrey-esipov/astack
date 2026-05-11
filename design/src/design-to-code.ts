@@ -5,7 +5,7 @@
  */
 
 import fs from "fs";
-import { requireApiKey } from "./auth";
+import { loadBackendConfig, requireChatBackend } from "./backend";
 import { readDesignConstraints } from "./memory";
 
 export interface DesignToCodeResult {
@@ -23,10 +23,9 @@ export async function generateDesignToCodePrompt(
   imagePath: string,
   repoRoot?: string,
 ): Promise<DesignToCodeResult> {
-  const apiKey = requireApiKey();
+  const chat = requireChatBackend(loadBackendConfig());
   const imageData = fs.readFileSync(imagePath).toString("base64");
 
-  // Read DESIGN.md if available for additional context
   const designConstraints = repoRoot ? readDesignConstraints(repoRoot) : null;
 
   const controller = new AbortController();
@@ -37,14 +36,11 @@ export async function generateDesignToCodePrompt(
       ? `\n\nExisting DESIGN.md (use these as constraints):\n${designConstraints}`
       : "";
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(chat.url, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: chat.headers,
       body: JSON.stringify({
-        model: "gpt-4o",
+        model: chat.model,
         messages: [{
           role: "user",
           content: [

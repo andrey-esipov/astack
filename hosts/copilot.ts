@@ -32,9 +32,12 @@ const copilot: HostConfig = {
     descriptionLimit: 1024,
     descriptionLimitBehavior: 'truncate',
     extraFields: {
-      target: 'github-copilot',
+      // `target` is intentionally omitted — defaults to "both" (Copilot CLI + VS Code
+      // Copilot extension), maximising reach. Set to "github-copilot" or "vscode" to
+      // narrow if a deployment ever needs that.
       // gstack skills need broad tool access. Emit as YAML array via stringified literal —
       // transformFrontmatter does string-interpolation, so the value is rendered verbatim.
+      // (If transformFrontmatter ever gains real array support, switch to a JS array.)
       tools: '["*"]',
     },
   },
@@ -47,9 +50,15 @@ const copilot: HostConfig = {
   },
 
   pathRewrites: [
+    // Copilot CLI installs are global-only — agents live in ~/.copilot/agents/
+    // and runtime support files (bin/, browse/) live in ~/.copilot/gstack/ via
+    // $GSTACK_ROOT. Both the `~/.claude/skills/gstack` references (absolute, in
+    // bash blocks) AND the `.claude/skills` references (project-local hints in
+    // prose) need to point at the same runtime root, since Copilot CLI doesn't
+    // currently have a per-workspace agents directory.
     { from: '~/.claude/skills/gstack', to: '$GSTACK_ROOT' },
-    { from: '.claude/skills/gstack', to: '.copilot/skills/gstack' },
-    { from: '.claude/skills', to: '.copilot/skills' },
+    { from: '.claude/skills/gstack', to: '$GSTACK_ROOT' },
+    { from: '.claude/skills', to: '$GSTACK_ROOT' },
   ],
 
   suppressedResolvers: [

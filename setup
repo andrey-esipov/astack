@@ -959,6 +959,9 @@ fi
 if [ "$INSTALL_COPILOT" -eq 1 ]; then
   mkdir -p "$COPILOT_AGENTS"
   mkdir -p "$COPILOT_GSTACK"
+  # Clean stale gstack symlinks first so renamed/removed skills don't leave
+  # orphan entries pointing at non-existent source files.
+  find "$COPILOT_AGENTS" -maxdepth 1 -name "gstack-*.agent.md" -type l -delete 2>/dev/null || true
   # Symlink each agent file (flat layout — Copilot CLI does not recurse)
   for f in "$SOURCE_GSTACK_DIR"/.copilot/agents/*.agent.md; do
     [ -e "$f" ] || continue  # tolerate no matches

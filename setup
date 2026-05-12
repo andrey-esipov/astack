@@ -972,16 +972,20 @@ if [ "$INSTALL_COPILOT" -eq 1 ]; then
   mkdir -p "$COPILOT_SKILLS"
   mkdir -p "$COPILOT_GSTACK"
 
-  # For each generated skill dir (gstack-<name>), symlink it under the
-  # collection root with the BARE name so the user invokes /<name> not
-  # /gstack-<name>. Copilot CLI recurses into ~/.copilot/skills/, so the
-  # collection layout `astack/<name>/SKILL.md` is discoverable.
+  # For each generated skill dir (gstack-<name>), install BOTH names:
+  #   /<bare>          — convenient invocation (preferred when unique)
+  #   /gstack-<name>   — explicit, disambiguates from Copilot CLI built-ins
+  #                      (/review, /diff, /pr, /update, ...) which would
+  #                      otherwise win a name collision.
+  # Copilot CLI recurses into ~/.copilot/skills/, so the collection layout
+  # `astack/<name>/SKILL.md` is discoverable.
   LINKED=0
   for skill_dir in "$SOURCE_GSTACK_DIR"/.copilot/skills/gstack-*/; do
     [ -d "$skill_dir" ] || continue
     src_name="$(basename "$skill_dir")"          # gstack-qa
     bare_name="${src_name#gstack-}"              # qa
     ln -snf "$skill_dir" "$COPILOT_SKILLS/$bare_name"
+    ln -snf "$skill_dir" "$COPILOT_SKILLS/$src_name"
     LINKED=$((LINKED + 1))
   done
   # The root gstack skill (without prefix) installs as /astack itself

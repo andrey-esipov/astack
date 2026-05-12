@@ -22,6 +22,7 @@ import {
   slate,
   cursor,
   openclaw,
+  copilot,
 } from '../hosts/index';
 import { HOST_PATHS } from '../scripts/resolvers/types';
 
@@ -53,6 +54,7 @@ describe('hosts/index.ts', () => {
     expect(slate.name).toBe('slate');
     expect(cursor.name).toBe('cursor');
     expect(openclaw.name).toBe('openclaw');
+    expect(copilot.name).toBe('copilot');
   });
 
   test('getHostConfig returns correct config', () => {
@@ -354,6 +356,20 @@ describe('host-config-export.ts CLI', () => {
     expect(lines).toContain('review/checklist.md');
   });
 
+  test('copilot symlinks return the generated runtime assets', () => {
+    const { stdout, exitCode } = run('symlinks', 'copilot');
+    expect(exitCode).toBe(0);
+    const lines = stdout.split('\n');
+    expect(lines).toContain('bin');
+    expect(lines).toContain('browse/dist');
+    expect(lines).toContain('design/dist');
+    expect(lines).toContain('make-pdf/dist');
+    expect(lines).toContain('design-html/vendor/pretext.js');
+    expect(lines).toContain('plan-devex-review');
+    expect(lines).toContain('review/design-checklist.md');
+    expect(lines).toContain('VERSION');
+  });
+
   test('opencode symlinks returns nested runtime assets', () => {
     const { stdout, exitCode } = run('symlinks', 'opencode');
     expect(exitCode).toBe(0);
@@ -533,6 +549,13 @@ describe('host config correctness', () => {
       expect(config.runtimeRoot.globalSymlinks.length).toBeGreaterThan(0);
       expect(config.runtimeRoot.globalSymlinks).toContain('bin');
       expect(config.runtimeRoot.globalSymlinks).toContain('ETHOS.md');
+    }
+  });
+
+  test('every generated host subdir is gitignored', () => {
+    const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf-8');
+    for (const config of getExternalHosts()) {
+      expect(gitignore).toContain(`${config.hostSubdir}/`);
     }
   });
 });

@@ -745,23 +745,16 @@ create_copilot_runtime_root() {
   # Remove the broken prototype runtime link name from earlier Copilot support.
   [ -L "$copilot_gstack/browse-dist" ] && rm -f "$copilot_gstack/browse-dist"
 
-  for asset in bin browse design design-html document-release extension gstack-upgrade make-pdf office-hours plan-ceo-review plan-design-review plan-devex-review plan-eng-review qa review; do
+  while IFS= read -r asset; do
+    [ -n "$asset" ] || continue
     local src="$gstack_dir/$asset"
     local dst="$copilot_gstack/$asset"
     [ -e "$src" ] || continue
+    mkdir -p "$(dirname "$dst")"
     if [ -L "$dst" ] || [ ! -e "$dst" ]; then
       ln -snf "$src" "$dst"
     fi
-  done
-
-  for file in ETHOS.md VERSION; do
-    local src="$gstack_dir/$file"
-    local dst="$copilot_gstack/$file"
-    [ -f "$src" ] || continue
-    if [ -L "$dst" ] || [ ! -e "$dst" ]; then
-      ln -snf "$src" "$dst"
-    fi
-  done
+  done < <(bun run "$gstack_dir/scripts/host-config-export.ts" symlinks copilot 2>/dev/null)
 }
 
 link_factory_skill_dirs() {

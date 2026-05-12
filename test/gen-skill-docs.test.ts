@@ -4,6 +4,7 @@ import { SNAPSHOT_FLAGS } from '../browse/src/snapshot';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import copilot from '../hosts/copilot';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
@@ -206,6 +207,32 @@ describe('gen-skill-docs', () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  test('Copilot runtimeRoot covers generated $GSTACK_ROOT references', () => {
+    const copilotDir = path.join(ROOT, '.copilot', 'skills');
+    if (!fs.existsSync(copilotDir)) return;
+
+    const allowed = new Set(copilot.runtimeRoot.globalSymlinks);
+    for (const [dir, files] of Object.entries(copilot.runtimeRoot.globalFiles || {})) {
+      for (const file of files) allowed.add(`${dir}/${file}`);
+    }
+
+    const missing = new Set<string>();
+    for (const entry of fs.readdirSync(copilotDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const skillMd = path.join(copilotDir, entry.name, 'SKILL.md');
+      if (!fs.existsSync(skillMd)) continue;
+      const content = fs.readFileSync(skillMd, 'utf-8');
+      for (const match of content.matchAll(/\$GSTACK_ROOT\/([A-Za-z0-9._/-]*)/g)) {
+        const ref = match[1].replace(/\/$/, '');
+        if (!ref || ref.startsWith('.')) continue;
+        const covered = [...allowed].some(asset => ref === asset || ref.startsWith(`${asset}/`));
+        if (!covered) missing.add(ref);
+      }
+    }
+
+    expect([...missing].sort()).toEqual([]);
   });
 
   test('package.json version matches VERSION file', () => {

@@ -86,9 +86,26 @@ const copilot: HostConfig = {
   ],
 
   runtimeRoot: {
-    globalSymlinks: ['bin', 'browse/dist', 'browse/bin', 'gstack-upgrade', 'ETHOS.md'],
+    globalSymlinks: [
+      'bin',
+      'browse/dist',
+      'browse/bin',
+      'design/dist',
+      'design-html/vendor/pretext.js',
+      'document-release',
+      'extension',
+      'gstack-upgrade',
+      'make-pdf/dist',
+      'office-hours',
+      'plan-ceo-review',
+      'plan-design-review',
+      'plan-devex-review',
+      'plan-eng-review',
+      'ETHOS.md',
+      'VERSION',
+    ],
     globalFiles: {
-      'review': ['checklist.md', 'TODOS-format.md'],
+      'review': ['checklist.md', 'design-checklist.md', 'greptile-triage.md', 'TODOS-format.md'],
     },
   },
 

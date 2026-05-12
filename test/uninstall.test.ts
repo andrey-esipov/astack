@@ -161,5 +161,35 @@ describe('gstack-uninstall', () => {
       // Non-gstack should survive
       expect(fs.existsSync(path.join(mockHome, '.claude', 'skills', 'other-tool'))).toBe(true);
     });
+
+    test('--force removes Copilot CLI skills and runtime without touching unrelated skills', () => {
+      const copilotSkills = path.join(mockHome, '.copilot', 'skills');
+      const copilotRuntime = path.join(mockHome, '.copilot', 'gstack');
+      fs.mkdirSync(path.join(copilotRuntime, '.copilot', 'skills', 'gstack-qa'), { recursive: true });
+      fs.mkdirSync(path.join(copilotSkills, 'my-skill'), { recursive: true });
+      fs.symlinkSync(path.join(copilotRuntime, '.copilot', 'skills', 'gstack-qa'), path.join(copilotSkills, 'qa'));
+      fs.mkdirSync(path.join(copilotSkills, 'astack-review'), { recursive: true });
+      fs.writeFileSync(
+        path.join(copilotSkills, 'astack-review', 'SKILL.md'),
+        '<!-- AUTO-GENERATED from SKILL.md.tmpl -->\n'
+      );
+
+      const result = spawnSync('bash', [UNINSTALL, '--force'], {
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          HOME: mockHome,
+          GSTACK_DIR: path.join(mockHome, '.claude', 'skills', 'gstack'),
+          GSTACK_STATE_DIR: path.join(mockHome, '.gstack'),
+        },
+        cwd: mockGitRoot,
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.existsSync(path.join(copilotSkills, 'qa'))).toBe(false);
+      expect(fs.existsSync(path.join(copilotSkills, 'astack-review'))).toBe(false);
+      expect(fs.existsSync(path.join(copilotSkills, 'my-skill'))).toBe(true);
+      expect(fs.existsSync(copilotRuntime)).toBe(false);
+    });
   });
 });

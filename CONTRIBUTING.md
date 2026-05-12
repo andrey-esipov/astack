@@ -228,6 +228,12 @@ bun run skill:check
 bun run dev:skill
 ```
 
+Copilot CLI support is generated with `--host copilot` and installed with
+`./setup --host copilot`. Generated skill docs live under `.copilot/skills/`,
+personal installs are flat under `~/.copilot/skills/`, and runtime assets live
+under `~/.copilot/gstack/`. Keep those paths in sync when changing setup or
+host config.
+
 For template authoring best practices (natural language over bash-isms, dynamic branch detection, `{{BASE_BRANCH_DETECT}}` usage), see CLAUDE.md's "Writing SKILL templates" section.
 
 To add a browse command, add it to `browse/src/commands.ts`. To add a snapshot flag, add it to `SNAPSHOT_FLAGS` in `browse/src/snapshot.ts`. Then rebuild.

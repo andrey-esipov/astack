@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# gstack-settings-hook — add/remove SessionStart hooks in Claude Code settings.json
+# gstack-settings-hook — add/remove Claude Code hooks in settings.json
 #
 # Usage:
-#   gstack-settings-hook add <hook-command>     # add SessionStart hook
-#   gstack-settings-hook remove <hook-command>  # remove SessionStart hook
+#   gstack-settings-hook add <hook-command>          # add SessionStart hook
+#   gstack-settings-hook remove <hook-command>       # remove SessionStart hook
+#   gstack-settings-hook add-sound [sound-command]   # add Stop + Notification sound hooks
+#   gstack-settings-hook remove-sound [sound-command]
 #
 # Requires: bun (already a gstack hard dependency)
 # Writes atomically: .tmp + rename to prevent corruption on crash/disk-full.
@@ -13,11 +15,26 @@ set -euo pipefail
 ACTION="${1:-}"
 HOOK_CMD="${2:-}"
 SETTINGS_FILE="${GSTACK_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+DEFAULT_SOUND_CMD='afplay /System/Library/Sounds/Glass.aiff'
 
-if [ -z "$ACTION" ] || [ -z "$HOOK_CMD" ]; then
-  echo "Usage: gstack-settings-hook {add|remove} <hook-command>" >&2
+if [ -z "$ACTION" ]; then
+  echo "Usage: gstack-settings-hook {add|remove|add-sound|remove-sound} [hook-command]" >&2
   exit 1
 fi
+
+case "$ACTION" in
+  add|remove)
+    if [ -z "$HOOK_CMD" ]; then
+      echo "Usage: gstack-settings-hook $ACTION <hook-command>" >&2
+      exit 1
+    fi
+    ;;
+  add-sound|remove-sound)
+    [ -z "$HOOK_CMD" ] && HOOK_CMD="$DEFAULT_SOUND_CMD"
+    ;;
+  *)
+    ;;
+esac
 
 if ! command -v bun >/dev/null 2>&1; then
   echo "Error: bun is required but not installed." >&2
@@ -53,6 +70,35 @@ case "$ACTION" in
       fs.renameSync(tmp, settingsPath);
     " 2>/dev/null
     ;;
+  add-sound)
+    GSTACK_SETTINGS_PATH="$SETTINGS_FILE" GSTACK_SOUND_CMD="$HOOK_CMD" bun -e "
+      const fs = require('fs');
+      const settingsPath = process.env.GSTACK_SETTINGS_PATH;
+      const soundCmd = process.env.GSTACK_SOUND_CMD;
+
+      let settings = {};
+      try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+
+      if (!settings.hooks) settings.hooks = {};
+
+      for (const eventName of ['Stop', 'Notification']) {
+        if (!settings.hooks[eventName]) settings.hooks[eventName] = [];
+        const exists = settings.hooks[eventName].some(entry =>
+          entry.hooks && entry.hooks.some(h => h.type === 'command' && h.command === soundCmd)
+        );
+
+        if (!exists) {
+          settings.hooks[eventName].push({
+            hooks: [{ type: 'command', command: soundCmd }]
+          });
+        }
+      }
+
+      const tmp = settingsPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n');
+      fs.renameSync(tmp, settingsPath);
+    " 2>/dev/null
+    ;;
   remove)
     [ -f "$SETTINGS_FILE" ] || exit 1
     GSTACK_SETTINGS_PATH="$SETTINGS_FILE" bun -e "
@@ -75,8 +121,37 @@ case "$ACTION" in
       fs.renameSync(tmp, settingsPath);
     " 2>/dev/null
     ;;
+  remove-sound)
+    [ -f "$SETTINGS_FILE" ] || exit 1
+    GSTACK_SETTINGS_PATH="$SETTINGS_FILE" GSTACK_SOUND_CMD="$HOOK_CMD" bun -e "
+      const fs = require('fs');
+      const settingsPath = process.env.GSTACK_SETTINGS_PATH;
+      const soundCmd = process.env.GSTACK_SOUND_CMD;
+
+      let settings = {};
+      try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { process.exit(0); }
+
+      if (settings.hooks) {
+        for (const eventName of ['Stop', 'Notification']) {
+          if (!settings.hooks[eventName]) continue;
+          settings.hooks[eventName] = settings.hooks[eventName]
+            .map(entry => ({
+              ...entry,
+              hooks: (entry.hooks || []).filter(h => !(h.type === 'command' && h.command === soundCmd))
+            }))
+            .filter(entry => entry.hooks && entry.hooks.length > 0);
+          if (settings.hooks[eventName].length === 0) delete settings.hooks[eventName];
+        }
+        if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+      }
+
+      const tmp = settingsPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n');
+      fs.renameSync(tmp, settingsPath);
+    " 2>/dev/null
+    ;;
   *)
-    echo "Unknown action: $ACTION (expected add or remove)" >&2
+    echo "Unknown action: $ACTION (expected add, remove, add-sound, or remove-sound)" >&2
     exit 1
     ;;
 esac

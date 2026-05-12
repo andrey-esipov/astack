@@ -8,11 +8,10 @@ import type { HostConfig } from '../scripts/host-config';
  *   2. Agents (.agent.md files invoked as tools by the model)
  *
  * gstack content is overwhelmingly "skills" in Copilot's sense — workflows
- * a user invokes (/qa, /review, /ship, /autoplan, …). This host emits SKILL.md
- * files via the standard per-skill-dir layout. Setup installs them under a
- * collection subdir at ~/.copilot/skills/astack/<name>/SKILL.md (or
- * ~/.copilot/skills/gstack/<name>/SKILL.md in upstream), which Copilot CLI's
- * native skill loader discovers via recursive scan.
+ * a user invokes (/qa, /review, /ship, /autoplan, ...). This host emits
+ * SKILL.md files via the standard per-skill-dir layout. Setup installs them
+ * as flat top-level personal skills under ~/.copilot/skills/<name>/SKILL.md
+ * so Copilot CLI's /skills registry and slash picker can see them.
  *
  * Schema reference:
  *   https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills
@@ -22,14 +21,12 @@ const copilot: HostConfig = {
   displayName: 'GitHub Copilot CLI',
   cliCommand: 'copilot',
 
-  // Copilot CLI's `/skills` registry and `/` autocomplete only see flat
-  // top-level entries under ~/.copilot/skills/ — collection subdirs work for
-  // description-based auto-trigger but stay invisible to the picker. Install
-  // is FLAT: ~/.copilot/skills/<name>/SKILL.md, with the setup script
-  // renaming any skills that collide with Copilot built-ins (e.g. /review)
-  // to /astack-<name>.
-  globalRoot: '.copilot/skills',
-  localSkillRoot: '.copilot/skills',
+  // Runtime assets live outside the skill discovery tree. The installed skill
+  // dirs under ~/.copilot/skills stay tiny and point here through $GSTACK_ROOT.
+  globalRoot: '.copilot/gstack',
+  // Copilot project skills can live in .github/skills. A repo-local astack
+  // runtime can use this shape without competing with personal skills.
+  localSkillRoot: '.github/skills/gstack',
   hostSubdir: '.copilot',
   usesEnvVars: true,
 
@@ -59,12 +56,9 @@ const copilot: HostConfig = {
   },
 
   pathRewrites: [
-    // Bash blocks inside skills reference ~/.claude/skills/gstack/bin/… for
+    // Bash blocks inside skills reference ~/.claude/skills/gstack/bin/... for
     // sidecar tooling (telemetry, learnings, gbrain). Route them to the
-    // copilot-side runtime root that setup creates at ~/.copilot/gstack/.
-    // `.claude/skills` references in prose point at the same root since
-    // Copilot CLI doesn't have a per-workspace skills directory equivalent
-    // to .claude/skills/gstack/.
+    // Copilot runtime root that setup creates at ~/.copilot/gstack/.
     { from: '~/.claude/skills/gstack', to: '$GSTACK_ROOT' },
     { from: '.claude/skills/gstack', to: '$GSTACK_ROOT' },
     { from: '.claude/skills', to: '$GSTACK_ROOT' },

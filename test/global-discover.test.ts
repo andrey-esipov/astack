@@ -129,6 +129,52 @@ describe("gstack-global-discover", () => {
       const json = JSON.parse(result.stdout);
       expect(json.total_sessions).toBeGreaterThanOrEqual(0);
     });
+
+    test("discovers Copilot sessions from workspace.yaml", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "gstack-global-discover-"));
+      try {
+        const repoDir = join(tempDir, "repo");
+        mkdirSync(repoDir, { recursive: true });
+
+        const gitInit = spawnSync("git", ["init"], {
+          cwd: repoDir,
+          encoding: "utf-8",
+          timeout: 10000,
+        });
+        expect(gitInit.status).toBe(0);
+
+        const sessionDir = join(
+          tempDir,
+          "copilot-session-state",
+          "123e4567-e89b-12d3-a456-426614174000"
+        );
+        mkdirSync(sessionDir, { recursive: true });
+        writeFileSync(
+          join(sessionDir, "workspace.yaml"),
+          `id: 123e4567-e89b-12d3-a456-426614174000\ncwd: ${repoDir}\ngit_root: ${repoDir}\nrepository: local/test\nbranch: main\n`
+        );
+
+        const result = spawnSync(
+          "bun",
+          ["run", scriptPath, "--since", "7d", "--format", "json"],
+          {
+            encoding: "utf-8",
+            timeout: 30000,
+            env: {
+              ...process.env,
+              COPILOT_SESSION_STATE_DIR: join(tempDir, "copilot-session-state"),
+            },
+          }
+        );
+
+        expect(result.status).toBe(0);
+        const json = JSON.parse(result.stdout);
+        expect(json.tools.copilot.total_sessions).toBe(1);
+        expect(json.repos.some((repo: any) => repo.sessions.copilot === 1)).toBe(true);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("codex large session_meta parsing", () => {
@@ -310,6 +356,7 @@ describe("gstack-global-discover", () => {
         expect(repo.sessions).toHaveProperty("claude_code");
         expect(repo.sessions).toHaveProperty("codex");
         expect(repo.sessions).toHaveProperty("gemini");
+        expect(repo.sessions).toHaveProperty("copilot");
       }
     });
 
@@ -325,7 +372,8 @@ describe("gstack-global-discover", () => {
       const toolTotal =
         json.tools.claude_code.total_sessions +
         json.tools.codex.total_sessions +
-        json.tools.gemini.total_sessions;
+        json.tools.gemini.total_sessions +
+        json.tools.copilot.total_sessions;
       expect(json.total_sessions).toBe(toolTotal);
     });
 

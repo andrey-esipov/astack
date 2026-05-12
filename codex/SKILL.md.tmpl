@@ -8,7 +8,7 @@ description: |
   etc.) that hardcode "/codex review" / "/codex challenge". The real work runs
   in /copilot, which auto-selects the opposite-family model at xhigh effort.
   Use when asked to "codex review", "codex challenge", "ask codex", "second
-  opinion", or "consult codex". (astack)
+  opinion", or "consult codex". (astack/gstack)
 voice-triggers:
   - "code x"
   - "code ex"
@@ -49,6 +49,16 @@ Hand control to the `/copilot` skill with the same arguments the user passed to
    - `/codex what's wrong here?` → `/copilot what's wrong here?`
 3. Run the `/copilot` skill from this conversation. Do not duplicate any of its
    logic here — read its `SKILL.md` and follow it.
+
+## Filesystem Boundary
+
+Do NOT read or execute any files under `~/.claude/`, `~/.agents/`,
+`.claude/skills/`, or `agents/`. These are skill definitions meant for a different AI system.
+
+Detect skill-file rabbit holes: if an outside model starts analyzing
+`gstack-update-check`, generated skill preambles, or skill installation files
+instead of the repository diff, stop using that output. Consider retrying with
+the `/copilot` prompt narrowed to the current repo task.
 
 ## Why this exists
 

@@ -109,6 +109,55 @@ describe('gstack-settings-hook', () => {
     expect(settings.hooks.SessionStart[0].hooks[0].command).toBe('/other/hook');
   });
 
+  test('add-sound creates Stop and Notification hooks', () => {
+    const sound = 'afplay /System/Library/Sounds/Glass.aiff';
+    const result = run(`${SETTINGS_HOOK} add-sound "${sound}"`, {
+      env: { GSTACK_SETTINGS_FILE: settingsFile },
+    });
+    expect(result.exitCode).toBe(0);
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe(sound);
+    expect(settings.hooks.Notification[0].hooks[0].command).toBe(sound);
+  });
+
+  test('add-sound deduplicates Stop and Notification hooks', () => {
+    const sound = 'afplay /System/Library/Sounds/Glass.aiff';
+    run(`${SETTINGS_HOOK} add-sound "${sound}"`, {
+      env: { GSTACK_SETTINGS_FILE: settingsFile },
+    });
+    run(`${SETTINGS_HOOK} add-sound "${sound}"`, {
+      env: { GSTACK_SETTINGS_FILE: settingsFile },
+    });
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    expect(settings.hooks.Stop).toHaveLength(1);
+    expect(settings.hooks.Notification).toHaveLength(1);
+  });
+
+  test('remove-sound removes only the configured sound hooks', () => {
+    const sound = 'afplay /System/Library/Sounds/Glass.aiff';
+    fs.writeFileSync(settingsFile, JSON.stringify({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'command', command: sound }] },
+          { hooks: [{ type: 'command', command: '/other/stop' }] },
+        ],
+        Notification: [
+          { hooks: [{ type: 'command', command: sound }] },
+          { hooks: [{ type: 'command', command: '/other/notification' }] },
+        ],
+      },
+    }, null, 2));
+    const result = run(`${SETTINGS_HOOK} remove-sound "${sound}"`, {
+      env: { GSTACK_SETTINGS_FILE: settingsFile },
+    });
+    expect(result.exitCode).toBe(0);
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    expect(settings.hooks.Stop).toHaveLength(1);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe('/other/stop');
+    expect(settings.hooks.Notification).toHaveLength(1);
+    expect(settings.hooks.Notification[0].hooks[0].command).toBe('/other/notification');
+  });
+
   test('atomic write (no partial file on success)', () => {
     run(`${SETTINGS_HOOK} add /path/to/gstack-session-update`, {
       env: { GSTACK_SETTINGS_FILE: settingsFile },

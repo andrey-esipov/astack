@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gstack setup — build browser binary + register skills with Claude Code / Codex
+# gstack setup — build browser binary + register skills with Claude Code / Copilot CLI / Codex
 set -e
 umask 077  # Restrict new files to owner-only (0o600 files, 0o700 dirs)
 
@@ -48,6 +48,7 @@ SKILL_PREFIX=1
 SKILL_PREFIX_FLAG=0
 TEAM_MODE=0
 NO_TEAM_MODE=0
+SOUND_HOOKS=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) [ -z "$2" ] && echo "Missing value for --host (expected claude, codex, kiro, factory, opencode, copilot, openclaw, hermes, gbrain, or auto)" >&2 && exit 1; HOST="$2"; shift 2 ;;
@@ -57,6 +58,8 @@ while [ $# -gt 0 ]; do
     --no-prefix) SKILL_PREFIX=0; SKILL_PREFIX_FLAG=1; shift ;;
     --team)    TEAM_MODE=1; shift ;;
     --no-team) NO_TEAM_MODE=1; shift ;;
+    --sound-hooks) SOUND_HOOKS=1; shift ;;
+    --no-sound-hooks) SOUND_HOOKS=0; shift ;;
     -q|--quiet) QUIET=1; shift ;;
     *) shift ;;
   esac
@@ -332,9 +335,9 @@ if [ "$INSTALL_OPENCODE" -eq 1 ] && [ "$NEEDS_BUILD" -eq 0 ]; then
   )
 fi
 
-# 1e. Generate .copilot/ GitHub Copilot CLI agent files
+# 1e. Generate .copilot/ GitHub Copilot CLI skill docs
 if [ "$INSTALL_COPILOT" -eq 1 ] && [ "$NEEDS_BUILD" -eq 0 ]; then
-  log "Generating .copilot/ agent files..."
+  log "Generating .copilot/ skill docs..."
   (
     cd "$SOURCE_GSTACK_DIR"
     bun install --frozen-lockfile 2>/dev/null || bun install
@@ -720,6 +723,47 @@ create_opencode_runtime_root() {
   fi
 }
 
+create_copilot_runtime_root() {
+  local gstack_dir="$1"
+  local copilot_gstack="$2"
+
+  # If the user cloned astack directly into ~/.copilot/gstack, the checkout is
+  # already the runtime root.
+  if [ "$gstack_dir" = "$copilot_gstack" ]; then
+    return 0
+  fi
+
+  if [ -L "$copilot_gstack" ]; then
+    rm -f "$copilot_gstack"
+  elif [ -e "$copilot_gstack" ] && [ ! -d "$copilot_gstack" ]; then
+    echo "gstack setup failed: $copilot_gstack exists and is not a directory" >&2
+    exit 1
+  fi
+
+  mkdir -p "$copilot_gstack"
+
+  # Remove the broken prototype runtime link name from earlier Copilot support.
+  [ -L "$copilot_gstack/browse-dist" ] && rm -f "$copilot_gstack/browse-dist"
+
+  for asset in bin browse design design-html document-release extension gstack-upgrade make-pdf office-hours plan-ceo-review plan-design-review plan-devex-review plan-eng-review qa review; do
+    local src="$gstack_dir/$asset"
+    local dst="$copilot_gstack/$asset"
+    [ -e "$src" ] || continue
+    if [ -L "$dst" ] || [ ! -e "$dst" ]; then
+      ln -snf "$src" "$dst"
+    fi
+  done
+
+  for file in ETHOS.md VERSION; do
+    local src="$gstack_dir/$file"
+    local dst="$copilot_gstack/$file"
+    [ -f "$src" ] || continue
+    if [ -L "$dst" ] || [ ! -e "$dst" ]; then
+      ln -snf "$src" "$dst"
+    fi
+  done
+}
+
 link_factory_skill_dirs() {
   local gstack_dir="$1"
   local skills_dir="$2"
@@ -978,7 +1022,7 @@ if [ "$INSTALL_COPILOT" -eq 1 ]; then
   fi
 
   mkdir -p "$COPILOT_SKILLS"
-  mkdir -p "$COPILOT_GSTACK"
+  create_copilot_runtime_root "$SOURCE_GSTACK_DIR" "$COPILOT_GSTACK"
 
   # Clean any stale gstack-managed symlinks at the top level (from prior installs
   # with different naming). Only delete symlinks owned by gstack — never touch
@@ -1032,21 +1076,12 @@ if [ "$INSTALL_COPILOT" -eq 1 ]; then
     LINKED=$((LINKED + 1))
   fi
 
-  # Runtime support files referenced by skill bash blocks via $GSTACK_ROOT
-  ln -sfn "$SOURCE_GSTACK_DIR/bin" "$COPILOT_GSTACK/bin"
-  ln -sfn "$SOURCE_GSTACK_DIR/browse/dist" "$COPILOT_GSTACK/browse-dist"
-  ln -sfn "$SOURCE_GSTACK_DIR/gstack-upgrade" "$COPILOT_GSTACK/gstack-upgrade"
-  [ -f "$SOURCE_GSTACK_DIR/ETHOS.md" ] && ln -sfn "$SOURCE_GSTACK_DIR/ETHOS.md" "$COPILOT_GSTACK/ETHOS.md"
-
   echo "gstack ready (copilot)."
   echo "  browse: $BROWSE_BIN"
   echo "  copilot skills: $COPILOT_SKILLS ($LINKED skills installed)"
   echo "  runtime root: $COPILOT_GSTACK"
   echo ""
-  echo "  IMPORTANT: skills reference \$GSTACK_ROOT for sidecar tooling — set it"
-  echo "  before launching copilot:"
-  echo "    export GSTACK_ROOT=$COPILOT_GSTACK"
-  echo ""
+  echo "  If Copilot CLI is already running, use /skills reload."
   echo "  Invoke any gstack skill: copilot, then type /<skill-name> (e.g., /qa)."
 fi
 
@@ -1094,6 +1129,16 @@ rm -f /tmp/gstack-latest-version
 # 10. Team mode: register/unregister SessionStart hook
 SETTINGS_HOOK="$SOURCE_GSTACK_DIR/bin/gstack-settings-hook"
 HOOK_CMD="$SOURCE_GSTACK_DIR/bin/gstack-session-update"
+SOUND_HOOK_CMD='afplay /System/Library/Sounds/Glass.aiff'
+
+# Personal astack default: notify when Claude Code finishes or needs input.
+if [ "$SOUND_HOOKS" -eq 1 ] \
+  && [ "$(uname -s)" = "Darwin" ] \
+  && command -v afplay >/dev/null 2>&1 \
+  && [ -f /System/Library/Sounds/Glass.aiff ] \
+  && [ -x "$SETTINGS_HOOK" ]; then
+  "$SETTINGS_HOOK" add-sound "$SOUND_HOOK_CMD" 2>/dev/null || true
+fi
 
 if [ "$TEAM_MODE" -eq 1 ]; then
   "$GSTACK_CONFIG" set auto_upgrade true 2>/dev/null || true

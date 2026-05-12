@@ -9,7 +9,7 @@ description: |
   model and forces the OPPOSITE model at xhigh effort for adversarial work —
   if your default is GPT-5.5, /copilot uses Claude Opus 4.7, and vice-versa.
   Use when asked to "copilot review", "second opinion", "challenge this", or
-  "ask copilot". (astack)
+  "ask copilot". (astack/gstack)
   Voice triggers (speech-to-text aliases): "co pilot", "co-pilot", "second opinion", "get another opinion".
 triggers:
   - copilot review

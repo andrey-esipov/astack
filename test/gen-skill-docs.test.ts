@@ -1627,7 +1627,7 @@ describe('Codex generation (--host codex)', () => {
     }
     for (const entry of fs.readdirSync(ROOT, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      if (entry.name === 'codex') continue; // /codex is excluded from Codex output
+      if (entry.name === 'codex' || entry.name === 'copilot') continue; // host wrappers are excluded from Codex output
       if (!fs.existsSync(path.join(ROOT, entry.name, 'SKILL.md.tmpl'))) continue;
       const codexName = entry.name.startsWith('gstack-') ? entry.name : `gstack-${entry.name}`;
       if (isSymlinkLoop(codexName)) continue;
@@ -2275,11 +2275,20 @@ describe('setup script validation', () => {
     expect(setupContent).toContain('claude|codex|kiro|factory|opencode|copilot|auto');
   });
 
-  test('auto mode detects claude, codex, kiro, and opencode binaries', () => {
+  test('auto mode detects claude, copilot, codex, kiro, and opencode binaries', () => {
     expect(setupContent).toContain('command -v claude');
+    expect(setupContent).toContain('command -v copilot');
     expect(setupContent).toContain('command -v codex');
     expect(setupContent).toContain('command -v kiro-cli');
     expect(setupContent).toContain('command -v opencode');
+  });
+
+  test('Copilot setup installs native personal skills with a runtime root', () => {
+    expect(setupContent).toContain('COPILOT_SKILLS="$HOME/.copilot/skills"');
+    expect(setupContent).toContain('COPILOT_GSTACK="$HOME/.copilot/gstack"');
+    expect(setupContent).toContain('create_copilot_runtime_root "$SOURCE_GSTACK_DIR" "$COPILOT_GSTACK"');
+    expect(setupContent).toContain('copilot skills: $COPILOT_SKILLS');
+    expect(setupContent).not.toContain('export GSTACK_ROOT=$COPILOT_GSTACK');
   });
 
   // T1: Sidecar skip guard — prevents .agents/skills/gstack from being linked as a skill
@@ -2375,6 +2384,13 @@ describe('setup script validation', () => {
   test('setup supports --no-prefix flag', () => {
     expect(setupContent).toContain('--no-prefix');
     expect(setupContent).toContain('SKILL_PREFIX=0');
+  });
+
+  test('setup registers Glass sound hooks by default with opt-out', () => {
+    expect(setupContent).toContain('SOUND_HOOKS=1');
+    expect(setupContent).toContain('--no-sound-hooks');
+    expect(setupContent).toContain('afplay /System/Library/Sounds/Glass.aiff');
+    expect(setupContent).toContain('add-sound "$SOUND_HOOK_CMD"');
   });
 
   test('cleanup_old_claude_symlinks removes only gstack-pointing symlinks', () => {

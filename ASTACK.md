@@ -12,32 +12,33 @@ These are the substantive divergences from upstream `garrytan/gstack`:
 
 ### 1. GitHub Copilot CLI as a first-class host (`--host copilot`)
 
-Adds GitHub Copilot CLI to gstack's host abstraction so all 46 skills install
-natively as Copilot CLI custom agents.
+Adds GitHub Copilot CLI to gstack's host abstraction so skills install natively
+as Copilot CLI agent skills.
 
-- **`hosts/copilot.ts`** — new HostConfig: emits `.agent.md` files with YAML
-  frontmatter (`name`, `description`, `target: github-copilot`, `tools: ["*"]`),
-  per Copilot's [custom agents schema](https://docs.github.com/en/copilot/reference/custom-agents-configuration).
-- **`scripts/host-config.ts`** — adds `outputLayout?: 'per-skill-dir' | 'flat-agent-md'`
-  field to `HostConfig`. Default is `'per-skill-dir'` (every existing host).
-  Copilot uses `'flat-agent-md'` (one file per skill, flat under `~/.copilot/agents/`).
-- **`scripts/gen-skill-docs.ts`** — branch in `processExternalHost` emits to
-  `<hostSubdir>/agents/<name>.agent.md` when `outputLayout === 'flat-agent-md'`.
+- **`hosts/copilot.ts`** — HostConfig for Copilot's `SKILL.md` schema. Generated
+  docs live in `<repo>/.copilot/skills/` for setup to install.
 - **`hosts/index.ts`** — registers `copilot` in `ALL_HOST_CONFIGS`.
-- **`setup`** — adds `INSTALL_COPILOT` flag, build step, install step. Run
+- **`setup`** — adds `INSTALL_COPILOT` flag, generation step, install step. Run
   `./setup --host copilot` to:
-  1. Generate `gstack-*.agent.md` files into `<repo>/.copilot/agents/`
-  2. Symlink each into `~/.copilot/agents/`
-  3. Create `~/.copilot/gstack/` runtime root with `bin/`, `browse-dist/`,
-     `gstack-upgrade/`, `ETHOS.md` symlinks
+  1. Generate Copilot-format `SKILL.md` files into `<repo>/.copilot/skills/`
+  2. Install flat personal skills into `~/.copilot/skills/`
+  3. Create `~/.copilot/gstack/` runtime root with sidecar assets
+     (`bin/`, `browse/`, `design/`, `make-pdf/`, review references, etc.)
+  4. Rename skills that collide with Copilot built-ins, currently `/review` →
+     `/astack-review`
 
-**Invoke**: `copilot --agent <skill> "..."` (e.g., `copilot --agent qa "test staging"`).
-Set `export GSTACK_ROOT=$HOME/.copilot/gstack` before launching `copilot` so
-agent prompts can resolve `$GSTACK_ROOT/bin/...` references.
+**Install on a Copilot CLI machine**:
+
+```bash
+git clone --single-branch --depth 1 https://github.com/andrey-esipov/astack.git ~/.copilot/gstack && cd ~/.copilot/gstack && ./setup --host copilot
+```
+
+If Copilot CLI is already running, enter `/skills reload`. Invoke skills with
+slash commands, e.g. `/qa`, `/ship`, `/autoplan`, or `/astack-review`.
 
 The `/copilot` gstack skill itself is excluded from generation (`skipSkills: ['copilot']`)
 because that skill shells out to the `copilot` CLI — exposing it as a Copilot
-agent would recurse.
+skill would recurse.
 
 This change is upstream-PR-quality: it's purely additive (existing hosts are
 untouched by the `outputLayout` branch). Could be sent to `garrytan/gstack` as
@@ -84,6 +85,12 @@ The closing beats of `office-hours/SKILL.md` that pitch Y Combinator
 applications are stripped. (Upstream is Garry's personal recruiting funnel
 for YC — irrelevant here.)
 
+### 5. Claude Code Glass sound hooks
+
+`./setup` installs personal Claude Code `Stop` and `Notification` hooks that run
+`afplay /System/Library/Sounds/Glass.aiff`, so finished turns and input-needed
+notifications use the same macOS Glass sound. Pass `--no-sound-hooks` to skip.
+
 ## Upstream-sync workflow
 
 `origin` points to `andrey-esipov/astack`; `upstream` points to
@@ -104,8 +111,9 @@ Expected conflict sites on upstream sync:
 | `codex/SKILL.md.tmpl`           | Upstream evolves the codex skill; we have a 67-line delegate |
 | `design/src/{generate,evolve,iterate,variants,check,cli,...}.ts` | Upstream tweaks OpenAI plumbing; we route through `backend.ts` |
 | `office-hours/SKILL.md.tmpl`    | Upstream may evolve the closing beats; we deleted them |
-| `scripts/host-config.ts`        | Small (~10 lines) — the `outputLayout` field addition |
-| `scripts/gen-skill-docs.ts`     | Small (~10 lines) — the `flat-agent-md` branch in `processExternalHost` |
+| `hosts/copilot.ts`              | Copilot host paths and runtime-root behavior |
+| `bin/gstack-global-discover.ts` | Copilot session discovery for `/retro global` |
+| `test/global-discover.test.ts`  | Copilot discovery fixtures |
 | `setup`                         | Several small blocks for `INSTALL_COPILOT` plumbing |
 | `hosts/index.ts`                | 2 lines (import + register) |
 

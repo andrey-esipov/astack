@@ -42,13 +42,30 @@ Fork it. Improve it. Make it yours. And if you want to hate on free open source 
 
 ## Install — 30 seconds
 
-**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+, [Node.js](https://nodejs.org/) (Windows only)
+**Requirements:** One supported host ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli), or another SKILL.md-compatible agent), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+, [Node.js](https://nodejs.org/) (Windows only)
 
 ### Step 1: Install on your machine
 
 Open Claude Code and paste this. Claude does the rest.
 
 > Install gstack: run **`git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup`** then add a "gstack" section to CLAUDE.md that says to use the /browse skill from gstack for all web browsing, never use mcp\_\_claude-in-chrome\_\_\* tools, and lists the available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-design-review, /design-consultation, /design-shotgun, /design-html, /review, /ship, /land-and-deploy, /canary, /benchmark, /browse, /connect-chrome, /qa, /qa-only, /design-review, /setup-browser-cookies, /setup-deploy, /setup-gbrain, /retro, /investigate, /document-release, /codex, /cso, /autoplan, /plan-devex-review, /devex-review, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, /learn. Then ask the user if they also want to add gstack to the current project so teammates get it.
+
+### GitHub Copilot CLI
+
+Copilot CLI supports personal skills from `~/.copilot/skills`. gstack installs
+flat native skill directories there and keeps shared runtime files in
+`~/.copilot/gstack`, so `/skills list` and slash autocomplete can see every
+skill without extra environment variables.
+
+Install once for your user account:
+
+```bash
+git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.copilot/gstack && cd ~/.copilot/gstack && ./setup --host copilot
+```
+
+If Copilot CLI is already running, enter `/skills reload` after setup. Then use
+skills by name, for example `/qa`, `/ship`, or `/astack-review` for the gstack
+review skill that avoids Copilot's built-in `/review` command.
 
 ### Step 2: Team mode — auto-update for shared repos (recommended)
 
@@ -199,7 +216,7 @@ Each skill feeds into the next. `/office-hours` writes a design doc that `/plan-
 | `/canary` | **SRE** | Post-deploy monitoring loop. Watches for console errors, performance regressions, and page failures. |
 | `/benchmark` | **Performance Engineer** | Baseline page load times, Core Web Vitals, and resource sizes. Compare before/after on every PR. |
 | `/document-release` | **Technical Writer** | Update all project docs to match what you just shipped. Catches stale READMEs automatically. |
-| `/retro` | **Eng Manager** | Team-aware weekly retro. Per-person breakdowns, shipping streaks, test health trends, growth opportunities. `/retro global` runs across all your projects and AI tools (Claude Code, Codex, Gemini). |
+| `/retro` | **Eng Manager** | Team-aware weekly retro. Per-person breakdowns, shipping streaks, test health trends, growth opportunities. `/retro global` runs across all your projects and AI tools (Claude Code, Codex, Gemini, Copilot). |
 | `/browse` | **QA Engineer** | Give the agent eyes. Real Chromium browser, real clicks, real screenshots. ~100ms per command. `/open-gstack-browser` launches GStack Browser with sidebar, anti-bot stealth, and auto model routing. |
 | `/setup-browser-cookies` | **Session Manager** | Import cookies from your real browser (Chrome, Arc, Brave, Edge) into the headless session. Test authenticated pages. |
 | `/autoplan` | **Review Pipeline** | One command, fully reviewed plan. Runs CEO → design → eng review automatically with encoded decision principles. Surfaces only taste decisions for your approval. |

@@ -3,70 +3,64 @@ import type { HostConfig } from '../scripts/host-config';
 /**
  * GitHub Copilot CLI host.
  *
- * Copilot CLI discovers custom agents as flat `.agent.md` files in
- * `~/.copilot/agents/`. Each file has YAML frontmatter (name, description,
- * tools, target, etc.) followed by markdown instructions. Invoke with
- * `copilot --agent <name>`.
+ * Copilot CLI exposes two customization surfaces:
+ *   1. Skills (SKILL.md files invoked as /<name> slash commands by the user)
+ *   2. Agents (.agent.md files invoked as tools by the model)
+ *
+ * gstack content is overwhelmingly "skills" in Copilot's sense — workflows
+ * a user invokes (/qa, /review, /ship, /autoplan, …). This host emits SKILL.md
+ * files via the standard per-skill-dir layout. Setup installs them under a
+ * collection subdir at ~/.copilot/skills/astack/<name>/SKILL.md (or
+ * ~/.copilot/skills/gstack/<name>/SKILL.md in upstream), which Copilot CLI's
+ * native skill loader discovers via recursive scan.
  *
  * Schema reference:
- *   https://docs.github.com/en/copilot/reference/custom-agents-configuration
- *
- * gstack skills are emitted as `gstack-<skill>.agent.md` (flat with prefix —
- * Copilot CLI does not recurse into subdirectories under ~/.copilot/agents/).
+ *   https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills
  */
 const copilot: HostConfig = {
   name: 'copilot',
   displayName: 'GitHub Copilot CLI',
   cliCommand: 'copilot',
 
-  globalRoot: '.copilot/agents',
-  localSkillRoot: '.copilot/agents',
+  // astack fork: skills install under ~/.copilot/skills/astack/. Upstream gstack
+  // would use 'gstack' here. Setup mirrors this string.
+  globalRoot: '.copilot/skills/astack',
+  localSkillRoot: '.copilot/skills/astack',
   hostSubdir: '.copilot',
   usesEnvVars: true,
-
-  outputLayout: 'flat-agent-md',
 
   frontmatter: {
     mode: 'allowlist',
     keepFields: ['name', 'description'],
     descriptionLimit: 1024,
     descriptionLimitBehavior: 'truncate',
-    extraFields: {
-      // `target` is intentionally omitted — defaults to "both" (Copilot CLI + VS Code
-      // Copilot extension), maximising reach. Set to "github-copilot" or "vscode" to
-      // narrow if a deployment ever needs that.
-      // gstack skills need broad tool access. Emit as YAML array via stringified literal —
-      // transformFrontmatter does string-interpolation, so the value is rendered verbatim.
-      // (If transformFrontmatter ever gains real array support, switch to a JS array.)
-      tools: '["*"]',
-    },
   },
 
   generation: {
     generateMetadata: false,
-    // Skipped because they don't fit Copilot CLI's stateless single-invocation
-    // agent model. They either toggle session state, configure other skills,
-    // or wrap a binary that should not recurse:
+    // Skipped because they don't translate to Copilot CLI's per-invocation
+    // skill model (each /<name> invocation is stateless), or because they
+    // wrap a CLI binary that has no reason to recurse:
     //   'codex'       — wraps the `codex` CLI binary (every external host skips this)
     //   'copilot'     — astack only: would recurse into the copilot CLI itself
-    //   'freeze'      — toggles a session-scoped edit boundary; agents are stateless
+    //   'freeze'      — toggles a session-scoped edit boundary; no session state to toggle
     //   'unfreeze'    — pairs with /freeze; same reason
     //   'careful'     — installs session-scoped destructive-command guardrails
     //   'guard'       — combines /careful + /freeze; same reason
     //   'plan-tune'   — interactive UI for tuning AskUserQuestion sensitivity
     //                   per-skill; only meaningful inside a persistent skill system
     // Follow-up: the rules from freeze/careful/guard could be injected into
-    // AGENTS.md so they're ambient across every Copilot CLI invocation.
+    // a project AGENTS.md so they're ambient across every Copilot CLI session.
     skipSkills: ['codex', 'copilot', 'freeze', 'unfreeze', 'careful', 'guard', 'plan-tune'],
   },
 
   pathRewrites: [
-    // Copilot CLI installs are global-only — agents live in ~/.copilot/agents/
-    // and runtime support files (bin/, browse/) live in ~/.copilot/gstack/ via
-    // $GSTACK_ROOT. Both the `~/.claude/skills/gstack` references (absolute, in
-    // bash blocks) AND the `.claude/skills` references (project-local hints in
-    // prose) need to point at the same runtime root, since Copilot CLI doesn't
-    // currently have a per-workspace agents directory.
+    // Bash blocks inside skills reference ~/.claude/skills/gstack/bin/… for
+    // sidecar tooling (telemetry, learnings, gbrain). Route them to the
+    // copilot-side runtime root that setup creates at ~/.copilot/gstack/.
+    // `.claude/skills` references in prose point at the same root since
+    // Copilot CLI doesn't have a per-workspace skills directory equivalent
+    // to .claude/skills/gstack/.
     { from: '~/.claude/skills/gstack', to: '$GSTACK_ROOT' },
     { from: '.claude/skills/gstack', to: '$GSTACK_ROOT' },
     { from: '.claude/skills', to: '$GSTACK_ROOT' },

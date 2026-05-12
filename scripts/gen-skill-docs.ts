@@ -349,17 +349,9 @@ function processExternalHost(
   const hostConfig = getHostConfig(host);
 
   const name = externalSkillName(skillDir === '.' ? '' : skillDir, frontmatterName);
-  let outputDir: string;
-  let outputPath: string;
-  if (hostConfig.outputLayout === 'flat-agent-md') {
-    outputDir = path.join(ROOT, hostConfig.hostSubdir, 'agents');
-    fs.mkdirSync(outputDir, { recursive: true });
-    outputPath = path.join(outputDir, `${name}.agent.md`);
-  } else {
-    outputDir = path.join(ROOT, hostConfig.hostSubdir, 'skills', name);
-    fs.mkdirSync(outputDir, { recursive: true });
-    outputPath = path.join(outputDir, 'SKILL.md');
-  }
+  const outputDir = path.join(ROOT, hostConfig.hostSubdir, 'skills', name);
+  fs.mkdirSync(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, 'SKILL.md');
 
   // Guard against symlink loops
   let symlinkLoop = false;

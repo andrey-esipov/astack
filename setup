@@ -993,29 +993,37 @@ if [ "$INSTALL_COPILOT" -eq 1 ]; then
   [ -L "$COPILOT_SKILLS/gstack" ] && rm -f "$COPILOT_SKILLS/gstack"
 
   # Install each generated skill dir (gstack-<name>) as a flat top-level entry.
-  # Skills whose bare name collides with a Copilot CLI built-in (per
-  # COPILOT_COLLISION_NAMES above) install as /astack-<name> instead.
+  # Non-colliding skills: symlink to the source (auto-updates with source).
+  # Colliding skills (per COPILOT_COLLISION_NAMES): copy SKILL.md into a real
+  # dir and sed the `name:` field to the prefixed form, so the slash command
+  # resolves to /astack-<name> instead of being shadowed by Copilot's built-in.
+  # The cp-then-sed avoids mutating the generated source file (which would
+  # make `bun run gen:skill-docs --dry-run` report it as STALE).
   LINKED=0
   for skill_dir in "$SOURCE_GSTACK_DIR"/.copilot/skills/gstack-*/; do
     [ -d "$skill_dir" ] || continue
     src_name="$(basename "$skill_dir")"          # gstack-qa
     bare_name="${src_name#gstack-}"              # qa
-    # Decide install name (bare or astack-prefixed) based on collision list.
-    install_name="$bare_name"
     case " $COPILOT_COLLISION_NAMES " in
-      *" $bare_name "*) install_name="astack-$bare_name" ;;
+      *" $bare_name "*)
+        # Collision: cp + sed into a real dir.
+        install_name="astack-$bare_name"
+        dest="$COPILOT_SKILLS/$install_name"
+        mkdir -p "$dest"
+        if [ -f "$skill_dir/SKILL.md" ]; then
+          # `sed -i ''` is BSD/macOS; `sed -i` is GNU/Linux. Try both.
+          if sed -E "s|^name: $bare_name\$|name: $install_name|" "$skill_dir/SKILL.md" > "$dest/SKILL.md.tmp"; then
+            mv "$dest/SKILL.md.tmp" "$dest/SKILL.md"
+          else
+            cp "$skill_dir/SKILL.md" "$dest/SKILL.md"
+          fi
+        fi
+        ;;
+      *)
+        # No collision: symlink the bare name to the source dir.
+        ln -snf "$skill_dir" "$COPILOT_SKILLS/$bare_name"
+        ;;
     esac
-    ln -snf "$skill_dir" "$COPILOT_SKILLS/$install_name"
-    # For collision-renamed skills, the SKILL.md frontmatter still says
-    # `name: <bare>` so the slash-command invocation would be /<bare> (which
-    # shadows the built-in we just dodged). Patch the symlink target's
-    # frontmatter `name:` to match the rename.
-    if [ "$install_name" != "$bare_name" ] && [ -f "$skill_dir/SKILL.md" ]; then
-      # In-place sed on the GENERATED file (not the source .tmpl). Safe to
-      # mutate — gen-skill-docs regenerates this dir on every build.
-      sed -i '' "s|^name: $bare_name$|name: $install_name|" "$skill_dir/SKILL.md" 2>/dev/null || \
-        sed -i "s|^name: $bare_name$|name: $install_name|" "$skill_dir/SKILL.md" 2>/dev/null || true
-    fi
     LINKED=$((LINKED + 1))
   done
   # The root gstack skill (no `gstack-` prefix in dir name) installs as /gstack

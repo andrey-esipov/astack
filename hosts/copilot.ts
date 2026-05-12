@@ -44,9 +44,20 @@ const copilot: HostConfig = {
 
   generation: {
     generateMetadata: false,
-    // The /copilot gstack skill itself shells out to the `copilot` CLI binary —
-    // exposing it as a copilot agent would let Copilot recurse on itself.
-    skipSkills: ['copilot'],
+    // Skipped because they don't fit Copilot CLI's stateless single-invocation
+    // agent model. They either toggle session state, configure other skills,
+    // or wrap a binary that should not recurse:
+    //   'codex'       — wraps the `codex` CLI binary (every external host skips this)
+    //   'copilot'     — astack only: would recurse into the copilot CLI itself
+    //   'freeze'      — toggles a session-scoped edit boundary; agents are stateless
+    //   'unfreeze'    — pairs with /freeze; same reason
+    //   'careful'     — installs session-scoped destructive-command guardrails
+    //   'guard'       — combines /careful + /freeze; same reason
+    //   'plan-tune'   — interactive UI for tuning AskUserQuestion sensitivity
+    //                   per-skill; only meaningful inside a persistent skill system
+    // Follow-up: the rules from freeze/careful/guard could be injected into
+    // AGENTS.md so they're ambient across every Copilot CLI invocation.
+    skipSkills: ['codex', 'copilot', 'freeze', 'unfreeze', 'careful', 'guard', 'plan-tune'],
   },
 
   pathRewrites: [

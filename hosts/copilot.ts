@@ -70,6 +70,17 @@ const copilot: HostConfig = {
     { from: '.claude/skills', to: '$GSTACK_ROOT' },
   ],
 
+  toolRewrites: {
+    // Copilot CLI's interactive prompt tool is `ask_user`, not `AskUserQuestion`.
+    // The dedicated AskUserQuestion preamble section is host-aware (see
+    // scripts/resolvers/preamble/generate-ask-user-format.ts), so the tool
+    // contract there is correct. These rewrites catch the inline references
+    // throughout the rest of every SKILL.md body so prose like "use
+    // AskUserQuestion to confirm" becomes "use ask_user to confirm".
+    'AskUserQuestion': 'ask_user',
+    'AUQ': 'ask_user',
+  },
+
   suppressedResolvers: [
     'DESIGN_OUTSIDE_VOICES',
     'ADVERSARIAL_STEP',

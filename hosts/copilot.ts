@@ -22,10 +22,14 @@ const copilot: HostConfig = {
   displayName: 'GitHub Copilot CLI',
   cliCommand: 'copilot',
 
-  // astack fork: skills install under ~/.copilot/skills/astack/. Upstream gstack
-  // would use 'gstack' here. Setup mirrors this string.
-  globalRoot: '.copilot/skills/astack',
-  localSkillRoot: '.copilot/skills/astack',
+  // Copilot CLI's `/skills` registry and `/` autocomplete only see flat
+  // top-level entries under ~/.copilot/skills/ — collection subdirs work for
+  // description-based auto-trigger but stay invisible to the picker. Install
+  // is FLAT: ~/.copilot/skills/<name>/SKILL.md, with the setup script
+  // renaming any skills that collide with Copilot built-ins (e.g. /review)
+  // to /astack-<name>.
+  globalRoot: '.copilot/skills',
+  localSkillRoot: '.copilot/skills',
   hostSubdir: '.copilot',
   usesEnvVars: true,
 

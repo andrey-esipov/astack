@@ -24,9 +24,13 @@ FACTORY_SKILLS="$HOME/.factory/skills"
 FACTORY_GSTACK="$FACTORY_SKILLS/gstack"
 OPENCODE_SKILLS="$HOME/.config/opencode/skills"
 OPENCODE_GSTACK="$OPENCODE_SKILLS/gstack"
-COPILOT_SKILLS="$HOME/.copilot/skills/astack"
+COPILOT_SKILLS="$HOME/.copilot/skills"
 COPILOT_GSTACK="$HOME/.copilot/gstack"
 COPILOT_AGENTS_LEGACY="$HOME/.copilot/agents"
+# Skill names that collide with Copilot CLI built-in slash commands. These
+# get installed under /astack-<name> so the built-in doesn't shadow them.
+# Add to this list when Copilot CLI ships new built-ins that conflict.
+COPILOT_COLLISION_NAMES="review diff pr"
 
 IS_WINDOWS=0
 case "$(uname -s)" in
@@ -953,10 +957,12 @@ if [ "$INSTALL_OPENCODE" -eq 1 ]; then
 fi
 
 # 6d. Install for GitHub Copilot CLI
-# Copilot discovers agents as flat `.agent.md` files under ~/.copilot/agents/.
-# We symlink each generated `gstack-<skill>.agent.md` from the repo's
-# .copilot/agents/ dir, and create ~/.copilot/gstack/ with bin/browse symlinks
-# so agents can resolve $GSTACK_ROOT-relative tooling.
+# Copilot CLI's `/skills` registry and `/` autocomplete picker only see flat
+# top-level entries under ~/.copilot/skills/. Each gstack skill installs as
+# a directory there, with the bare name when unique and `astack-<name>` when
+# the bare name collides with a Copilot built-in (/review, /diff, /pr).
+# Runtime support files (bin/, browse/) live at ~/.copilot/gstack/ via
+# $GSTACK_ROOT so skill bash blocks can resolve sidecar tooling.
 if [ "$INSTALL_COPILOT" -eq 1 ]; then
   # One-time migration: clean up legacy `.agent.md` symlinks from the
   # earlier-prototype install (pre-skills-rework). Safe to remove unconditionally
@@ -965,30 +971,54 @@ if [ "$INSTALL_COPILOT" -eq 1 ]; then
     find "$COPILOT_AGENTS_LEGACY" -maxdepth 1 -name "gstack-*.agent.md" -type l -delete 2>/dev/null || true
     find "$COPILOT_AGENTS_LEGACY" -maxdepth 1 -name "gstack.agent.md" -type l -delete 2>/dev/null || true
   fi
+  # Also clean the prior nested-layout install at ~/.copilot/skills/astack/
+  # (rebuild-to-flat migration).
+  if [ -d "$COPILOT_SKILLS/astack" ]; then
+    rm -rf "$COPILOT_SKILLS/astack"
+  fi
 
-  # Refresh the collection dir: removing the directory wipes stale symlinks
-  # from renamed/removed skills so they don't linger in /skills output.
-  rm -rf "$COPILOT_SKILLS"
   mkdir -p "$COPILOT_SKILLS"
   mkdir -p "$COPILOT_GSTACK"
 
-  # For each generated skill dir (gstack-<name>), install BOTH names:
-  #   /<bare>          — convenient invocation (preferred when unique)
-  #   /gstack-<name>   — explicit, disambiguates from Copilot CLI built-ins
-  #                      (/review, /diff, /pr, /update, ...) which would
-  #                      otherwise win a name collision.
-  # Copilot CLI recurses into ~/.copilot/skills/, so the collection layout
-  # `astack/<name>/SKILL.md` is discoverable.
+  # Clean any stale gstack-managed symlinks at the top level (from prior installs
+  # with different naming). Only delete symlinks owned by gstack — never touch
+  # the user's own personal skills at ~/.copilot/skills/.
+  for skill_dir in "$SOURCE_GSTACK_DIR"/.copilot/skills/gstack-*/; do
+    [ -d "$skill_dir" ] || continue
+    bare_name="$(basename "$skill_dir")"
+    bare_name="${bare_name#gstack-}"
+    [ -L "$COPILOT_SKILLS/$bare_name" ] && rm -f "$COPILOT_SKILLS/$bare_name"
+    [ -L "$COPILOT_SKILLS/astack-$bare_name" ] && rm -f "$COPILOT_SKILLS/astack-$bare_name"
+  done
+  [ -L "$COPILOT_SKILLS/gstack" ] && rm -f "$COPILOT_SKILLS/gstack"
+
+  # Install each generated skill dir (gstack-<name>) as a flat top-level entry.
+  # Skills whose bare name collides with a Copilot CLI built-in (per
+  # COPILOT_COLLISION_NAMES above) install as /astack-<name> instead.
   LINKED=0
   for skill_dir in "$SOURCE_GSTACK_DIR"/.copilot/skills/gstack-*/; do
     [ -d "$skill_dir" ] || continue
     src_name="$(basename "$skill_dir")"          # gstack-qa
     bare_name="${src_name#gstack-}"              # qa
-    ln -snf "$skill_dir" "$COPILOT_SKILLS/$bare_name"
-    ln -snf "$skill_dir" "$COPILOT_SKILLS/$src_name"
+    # Decide install name (bare or astack-prefixed) based on collision list.
+    install_name="$bare_name"
+    case " $COPILOT_COLLISION_NAMES " in
+      *" $bare_name "*) install_name="astack-$bare_name" ;;
+    esac
+    ln -snf "$skill_dir" "$COPILOT_SKILLS/$install_name"
+    # For collision-renamed skills, the SKILL.md frontmatter still says
+    # `name: <bare>` so the slash-command invocation would be /<bare> (which
+    # shadows the built-in we just dodged). Patch the symlink target's
+    # frontmatter `name:` to match the rename.
+    if [ "$install_name" != "$bare_name" ] && [ -f "$skill_dir/SKILL.md" ]; then
+      # In-place sed on the GENERATED file (not the source .tmpl). Safe to
+      # mutate — gen-skill-docs regenerates this dir on every build.
+      sed -i '' "s|^name: $bare_name$|name: $install_name|" "$skill_dir/SKILL.md" 2>/dev/null || \
+        sed -i "s|^name: $bare_name$|name: $install_name|" "$skill_dir/SKILL.md" 2>/dev/null || true
+    fi
     LINKED=$((LINKED + 1))
   done
-  # The root gstack skill (without prefix) installs as /astack itself
+  # The root gstack skill (no `gstack-` prefix in dir name) installs as /gstack
   if [ -d "$SOURCE_GSTACK_DIR/.copilot/skills/gstack" ]; then
     ln -snf "$SOURCE_GSTACK_DIR/.copilot/skills/gstack" "$COPILOT_SKILLS/gstack"
     LINKED=$((LINKED + 1))

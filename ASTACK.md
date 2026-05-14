@@ -58,10 +58,33 @@ a community contribution.
 - **`codex/`** — replaced upstream's OpenAI Codex CLI wrapper with a thin
   shim that delegates to `/copilot`. Preserves muscle memory and cross-skill
   callers (autoplan, plan-ceo-review, etc.) that hardcode `/codex`.
+- **`bin/codex`** (new, 2026-05-14) — an executable shell shim, not a skill.
+  Upstream gstack SKILL.md files probe `which codex` and shell out
+  `codex exec "<prompt>" -C "<cwd>" -s read-only -c '...' --enable web_search_cached`
+  for adversarial review (e.g. `/plan-eng-review` §"Outside Voice", `/plan-ceo-review`,
+  `/plan-design-review`). On a Copilot-CLI machine that `which codex` returns nothing,
+  so every such call falls back to "outside voice unavailable" and adversarial review
+  silently disappears. The `bin/codex` shim parses gstack's canonical call shape and
+  forwards to `copilot -p "<prompt>" -C "<cwd>" --model gpt-5.5 --effort xhigh
+  --allow-all-tools --no-ask-user`. Symlink into PATH on a Copilot machine:
+
+  ```bash
+  ln -sf ~/.claude/skills/gstack/bin/codex ~/.local/bin/codex
+  # or, if ~/.local/bin is not on PATH:
+  # ln -sf ~/.claude/skills/gstack/bin/codex /opt/homebrew/bin/codex
+  ```
+
+  Overrides:
+  - `COPILOT_MODEL=gpt-5.4 codex exec "..."` — one-shot model swap
+  - `COPILOT_EFFORT=high codex exec "..."` — lower effort
+  - `ASTACK_DISABLE_CODEX_SHIM=1 codex exec "..."` — disable; skills fall back
+    to their Claude-subagent path
 
 Why: this machine has Copilot CLI but no `codex` binary, and adversarial
 review should default to a different family than the model the user is
-running interactively.
+running interactively. The `bin/codex` shim ensures every upstream gstack
+adversarial-review touchpoint routes through Copilot CLI without per-skill
+edits, so upstream syncs don't break the contract.
 
 ### 3. Azure GPT-image-2 backend for design skills
 

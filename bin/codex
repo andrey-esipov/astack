@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# astack codex→copilot shim.
+#
+# Upstream gstack skills probe `which codex` and call `codex exec "<prompt>"`
+# to invoke an opposite-model adversarial reviewer. astack replaces Codex CLI
+# with GitHub Copilot CLI (gpt-5.5 @ xhigh effort) — see ASTACK.md.
+#
+# This shim makes `which codex` resolve, parses the gstack canonical invocation,
+# and forwards to `copilot -p "<prompt>" ...` so every adversarial-review
+# touchpoint (plan-eng-review, plan-ceo-review, plan-design-review, /codex,
+# /ship review gates) routes through Copilot CLI without requiring per-skill
+# edits.
+#
+# Supported gstack call shape:
+#   codex exec "<prompt>" -C "<cwd>" -s read-only \
+#     -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null
+#
+# Translation:
+#   copilot -p "<prompt>" -C "<cwd>" \
+#     --model "${COPILOT_MODEL:-gpt-5.5}" \
+#     --effort "${COPILOT_EFFORT:-xhigh}" \
+#     --allow-all-tools --no-ask-user
+#
+# Overrides:
+#   COPILOT_MODEL=gpt-5.4 codex exec "..."   # one-shot model swap
+#   COPILOT_EFFORT=high   codex exec "..."   # lower effort for cheaper runs
+#
+# Disable shim:
+#   ASTACK_DISABLE_CODEX_SHIM=1 codex exec "..."  → exits 2 with note
+#   (skills then fall back to their Claude-subagent path)
+
+set -uo pipefail
+
+if [ "${ASTACK_DISABLE_CODEX_SHIM:-0}" = "1" ]; then
+  echo "codex(shim): disabled via ASTACK_DISABLE_CODEX_SHIM=1" >&2
+  exit 2
+fi
+
+cmd="${1:-}"
+shift || true
+
+# Only `codex exec` is shimmed. Other subcommands are deliberately unsupported.
+if [ "$cmd" != "exec" ]; then
+  echo "codex(shim): unsupported subcommand '$cmd' — only 'codex exec ...' is shimmed to Copilot CLI" >&2
+  exit 2
+fi
+
+prompt=""
+cwd="$(pwd)"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      cwd="$2"
+      shift 2
+      ;;
+    -C=*)
+      cwd="${1#-C=}"
+      shift
+      ;;
+    -s|--sandbox)
+      shift 2 2>/dev/null || shift
+      ;;
+    -c)
+      shift 2 2>/dev/null || shift
+      ;;
+    --enable)
+      shift 2 2>/dev/null || shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      if [ -z "$prompt" ]; then
+        prompt="$1"
+      else
+        prompt="$prompt $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$prompt" ]; then
+  echo "codex(shim): no prompt given to 'codex exec'" >&2
+  exit 2
+fi
+
+# Resolve real copilot binary, skipping the zsh function wrapper that lives
+# only inside interactive shells.
+COPILOT_BIN=""
+for candidate in \
+  /opt/homebrew/bin/copilot \
+  /usr/local/bin/copilot \
+  "$HOME/.local/bin/copilot"; do
+  if [ -x "$candidate" ]; then
+    COPILOT_BIN="$candidate"
+    break
+  fi
+done
+[ -z "$COPILOT_BIN" ] && COPILOT_BIN="$(command -v copilot 2>/dev/null || true)"
+
+if [ -z "$COPILOT_BIN" ]; then
+  echo "codex(shim): copilot CLI not found on PATH — install with 'gh extension install github/gh-copilot' or 'brew install gh' then 'gh extension install github/gh-copilot'" >&2
+  exit 2
+fi
+
+# Forward to Copilot CLI in script-mode with astack defaults.
+exec "$COPILOT_BIN" \
+  -p "$prompt" \
+  -C "$cwd" \
+  --model "${COPILOT_MODEL:-gpt-5.5}" \
+  --effort "${COPILOT_EFFORT:-xhigh}" \
+  --allow-all-tools \
+  --no-ask-user
